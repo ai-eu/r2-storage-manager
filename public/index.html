@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>R2 Storage — Login</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body class="login-page">
+  <div class="login-container">
+    <div class="login-card">
+      <div class="login-logo">📦</div>
+      <h1 class="login-title">R2 Storage</h1>
+      <p class="login-subtitle">Self-hosted file manager</p>
+      <div id="login-status" class="login-status"></div>
+      <input type="password" id="apiKeyInput" placeholder="Enter your API key"
+        class="login-input" autofocus />
+      <button id="loginBtn" class="btn-primary" style="width:100%;margin-top:16px;">
+        Sign in
+      </button>
+    </div>
+  </div>
+  <script>
+    var input = document.getElementById("apiKeyInput");
+    var btn = document.getElementById("loginBtn");
+    var statusEl = document.getElementById("login-status");
+
+    function showStatus(msg, type) {
+      statusEl.textContent = msg;
+      statusEl.className = "login-status status-" + type;
+      statusEl.style.display = "block";
+    }
+
+    function tryLogin() {
+      var key = input.value.trim();
+      if (!key) { showStatus("Enter your API key", "error"); return; }
+      showStatus("Checking...", "info");
+      fetch("/api/tags/top?limit=1", { headers: { Authorization: "Bearer " + key } })
+        .then(function(r) {
+          if (r.status === 401) { showStatus("Invalid API key", "error"); return; }
+          if (!r.ok) { showStatus("Server error", "error"); return; }
+          localStorage.setItem("api_key", key);
+          window.location.href = "/app.html";
+        })
+        .catch(function() { showStatus("Connection error", "error"); });
+    }
+
+    btn.addEventListener("click", tryLogin);
+    input.addEventListener("keyup", function(e) { if (e.key === "Enter") tryLogin(); });
+    if (localStorage.getItem("api_key")) window.location.href = "/app.html";
+  </script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+name = "r2-storage-manager"
+main = "src/worker.js"
+compatibility_date = "2024-03-22"
+assets = { directory = "./public" }
+
+[[r2_buckets]]
+binding = "MY_BUCKET"
+bucket_name = "r2-storage"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "r2-storage"
+database_id = ""
+
+[vars]
+R2_ACCOUNT_ID = ""
+R2_BUCKET_NAME = "r2-storage"

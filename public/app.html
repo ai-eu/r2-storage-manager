@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>R2 Storage Manager</title>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div id="app" class="app-layout" v-cloak>
+    <aside class="app-sidebar">
+      <div class="app-header"><h1>R2 Storage</h1></div>
+
+      <div class="tag-cloud">
+        <div class="tag-cloud-title">Tags</div>
+        <input v-if="!activeTag" v-model="tagQuery" type="text"
+          placeholder="Search..." maxlength="8" class="tag-cloud-search" />
+        <button v-if="activeTag" @click="clearActiveTag" class="tag-btn"
+          style="background:var(--bg-tertiary);color:var(--text-primary);">All</button>
+        <div class="tags-list">
+          <button v-if="!activeTag && cloudTags.length===0 && !tagQuery" class="tag-btn"
+            style="background:var(--bg-tertiary);color:var(--text-secondary);" disabled>No tags yet</button>
+          <button v-for="t in cloudTags" :key="t.tag" @click="setActiveTag(t.tag)"
+            class="tag-btn" :style="{backgroundColor:tagToColors(t.tag).bg,color:tagToColors(t.tag).fg}">
+            {{ t.tag }}
+          </button>
+        </div>
+      </div>
+
+      <div v-if="activeTag" style="color:var(--text-secondary);font-size:13px;margin-bottom:16px;">
+        Filter: {{ activeTag }}
+      </div>
+
+      <div><button @click="logout" class="btn-secondary" style="margin-top:auto;">Log out</button></div>
+    </aside>
+
+    <main class="app-main">
+      <div class="app-header">
+        <h1>Files</h1>
+        <button @click="refreshAll" class="btn-icon" title="Refresh">↻</button>
+      </div>
+
+      <div class="files-section">
+        <div v-if="loading" class="loading-state"><span>Loading...</span></div>
+        <div v-else-if="files.length===0" class="empty-state"><span>No files</span></div>
+        <div v-else class="files-grid">
+          <div v-for="file in files" :key="file.key" class="file-card">
+            <div class="file-card-thumb" @click="viewFile(file)">
+              <img v-if="file.thumb_url" :src="file.thumb_url" />
+              <span v-else class="ext-icon">{{ getExtIcon(getExt(file.filename||file.key)) }}</span>
+            </div>
+            <button @click.stop="menuKey=menuKey===file.key?null:file.key"
+              class="file-card-menu-btn">⋯</button>
+            <div v-if="menuKey===file.key" class="file-card-menu">
+              <button @click.stop="menuKey=null;editTags(file)" title="Tags">🏷</button>
+              <button @click.stop="menuKey=null;downloadFile(file)" title="Download">⬇</button>
+              <button @click.stop="menuKey=null;deleteFile(file)" class="delete" title="Delete">🗑</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="upload-section">
+        <input type="file" ref="fileInput" @change="handleFileUpload" multiple
+          style="visibility:hidden;position:absolute;" />
+        <div class="upload-buttons">
+          <div><button @click="$refs.fileInput.click()" class="btn-primary">Upload files</button></div>
+        </div>
+        <div v-if="uploading" class="upload-progress">Uploading: {{ uploadProgress }}%</div>
+      </div>
+    </main>
+
+    <!-- Tag modal -->
+    <div v-if="tagModalOpen" class="modal-overlay" @click.self="closeTagsModal(null)">
+      <div class="modal">
+        <div class="modal-title">{{ tagModalTitle }}</div>
+        <input type="text" v-model="tagModalInput" placeholder="e.g. work invoices 2026"
+          class="modal-input" @keyup.enter="closeTagsModal(tagModalInput)" />
+        <div class="modal-buttons">
+          <button @click="closeTagsModal(tagModalInput)" class="btn-primary">OK</button>
+          <button @click="closeTagsModal(null)" class="btn-secondary">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Image viewer -->
+    <div v-if="viewerOpen" class="viewer-overlay">
+      <div class="viewer-header">
+        <div class="viewer-header-title">{{ viewerName }}</div>
+        <button @click="closeViewer" class="viewer-close-btn">Close</button>
+      </div>
+      <div class="viewer-body" ref="viewerStage" style="touch-action:none;"
+        @pointerdown="onViewerPointerDown" @pointermove="onViewerPointerMove"
+        @pointerup="onViewerPointerUp" @pointercancel="onViewerPointerUp">
+        <img ref="viewerImg" :src="viewerUrl" :style="viewerImgStyle"
+          draggable="false" @load="onViewerImgLoad" />
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

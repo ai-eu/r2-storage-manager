@@ -1,0 +1,19 @@
+{
+  "name": "r2-storage-manager",
+  "version": "1.0.0",
+  "description": "Self-hosted file manager for Cloudflare R2",
+  "main": "src/worker.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "setup": "node scripts/setup.js",
+    "reset": "node scripts/reset.js"
+  },
+  "dependencies": {
+    "aws4fetch": "^1.0.20",
+    "hono": "^4.0.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.78.0"
+  }
+}
