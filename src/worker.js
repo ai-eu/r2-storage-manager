@@ -328,7 +328,7 @@ app.get("/api/tags/related", async (c) => {
          FROM object_tags t
          JOIN object_tags b ON b.key = t.key
          WHERE b.tag = ? AND t.tag <> ?
-         GROUP BY t.tag ORDER BY count DESC, tag ASC LIMIT ?`,
+         GROUP BY t.tag ORDER BY count DESC, t.tag ASC LIMIT ?`,
       )
       .bind(baseTag, baseTag, limit)
       .all();
