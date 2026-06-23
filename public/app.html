@@ -35,7 +35,11 @@
       <div><button @click="logout" class="btn-secondary" style="margin-top:auto;">Log out</button></div>
     </aside>
 
-    <main class="app-main">
+    <main class="app-main" :class="{'drag-over':isDragOver}"
+      @dragover.prevent="onDragOver"
+      @dragenter.prevent="onDragEnter"
+      @dragleave.prevent="onDragLeave"
+      @drop.prevent="onDrop">
       <div class="app-header">
         <h1>Files</h1>
         <button @click="refreshAll" class="btn-icon" title="Refresh">↻</button>
@@ -99,6 +103,7 @@
     </div>
   </div>
 
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

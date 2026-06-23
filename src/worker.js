@@ -36,7 +36,9 @@ const authMiddleware = async (c, next) => {
   const token = header.startsWith("Bearer ")
     ? header.slice(7).trim()
     : header;
-  if (!token || token !== c.env.API_KEY) {
+  const queryToken = c.req.query("token") || "";
+  const finalToken = token || queryToken;
+  if (!finalToken || finalToken !== c.env.API_KEY) {
     return c.json({ error: "Unauthorized" }, 401);
   }
   await next();
@@ -157,42 +159,38 @@ app.get("/api/objects", async (c) => {
   }
 });
 
-// ── POST /api/objects/upload-url ──
-app.post("/api/objects/upload-url", async (c) => {
-  const { filename, content_type } = await c.req.json();
+// ── POST /api/objects/upload ──
+app.post("/api/objects/upload", async (c) => {
+  const filename = c.req.query("filename");
+  const contentType = c.req.query("content_type") || "application/octet-stream";
   if (!filename) return c.json({ error: "filename required" }, 400);
 
   const key = `files/${Date.now()}_${filename}`;
-  const aws = getAwsClient(c.env);
-  const endpoint = `https://${c.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com/${c.env.R2_BUCKET_NAME}/${key}`;
+  const body = await c.req.arrayBuffer();
 
-  const signed = await aws.sign(endpoint, {
-    method: "PUT",
-    headers: { "Content-Type": content_type || "application/octet-stream" },
-    aws: { signQuery: true },
+  await c.env.MY_BUCKET.put(key, body, {
+    httpMetadata: { contentType },
   });
 
-  return c.json({ url: signed.url, key });
+  return c.json({ key });
 });
 
-// ── POST /api/objects/thumb-url ──
-app.post("/api/objects/thumb-url", async (c) => {
-  const { key, ext } = await c.req.json();
-  if (!key || !ext) return c.json({ error: "key and ext required" }, 400);
+// ── POST /api/objects/thumb-upload ──
+app.post("/api/objects/thumb-upload", async (c) => {
+  const key = c.req.query("key");
+  const ext = c.req.query("ext") || "jpg";
+  if (!key) return c.json({ error: "key required" }, 400);
 
   const hash = await sha256Hex(key);
   const thumbKey = `thumbs/${hash}.${ext}`;
-  const aws = getAwsClient(c.env);
-  const bucket = c.env.R2_BUCKET_NAME;
-  const endpoint = `https://${c.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com/${bucket}/${thumbKey}`;
+  const contentType = ext === "webp" ? "image/webp" : "image/jpeg";
+  const body = await c.req.arrayBuffer();
 
-  const signed = await aws.sign(endpoint, {
-    method: "PUT",
-    headers: { "Content-Type": ext === "webp" ? "image/webp" : "image/jpeg" },
-    aws: { signQuery: true },
+  await c.env.MY_BUCKET.put(thumbKey, body, {
+    httpMetadata: { contentType },
   });
 
-  return c.json({ url: signed.url, thumb_key: thumbKey });
+  return c.json({ thumb_key: thumbKey });
 });
 
 // ── POST /api/objects/register ──
@@ -345,16 +343,17 @@ app.get("/api/objects/download-url", async (c) => {
   const key = c.req.query("key");
   if (!key) return c.json({ error: "key required" }, 400);
 
-  const aws = getAwsClient(c.env);
-  const bucket = c.env.R2_BUCKET_NAME;
-  const endpoint = `https://${c.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com/${bucket}/${key}`;
+  const object = await c.env.MY_BUCKET.get(key);
+  if (!object) return c.json({ error: "not found" }, 404);
 
-  const signed = await aws.sign(endpoint, {
-    method: "GET",
-    aws: { signQuery: true },
+  return new Response(object.body, {
+    status: 200,
+    headers: {
+      "Content-Type": object.httpMetadata?.contentType || "application/octet-stream",
+      "Content-Length": object.size,
+      "Content-Disposition": `inline; filename="${key.split("/").pop()}"`,
+    },
   });
-
-  return c.json({ url: signed.url });
 });
 
 // ── GET /api/objects/thumb-download-url ──
@@ -362,16 +361,16 @@ app.get("/api/objects/thumb-download-url", async (c) => {
   const thumbKey = c.req.query("thumb_key");
   if (!thumbKey) return c.json({ error: "thumb_key required" }, 400);
 
-  const aws = getAwsClient(c.env);
-  const bucket = c.env.R2_BUCKET_NAME;
-  const endpoint = `https://${c.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com/${bucket}/${thumbKey}`;
+  const object = await c.env.MY_BUCKET.get(thumbKey);
+  if (!object) return c.json({ error: "not found" }, 404);
 
-  const signed = await aws.sign(endpoint, {
-    method: "GET",
-    aws: { signQuery: true },
+  return new Response(object.body, {
+    status: 200,
+    headers: {
+      "Content-Type": object.httpMetadata?.contentType || "image/jpeg",
+      "Cache-Control": "public, max-age=86400",
+    },
   });
-
-  return c.json({ url: signed.url });
 });
 
 // ── DELETE /api/objects/:key ──

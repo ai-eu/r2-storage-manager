@@ -84,6 +84,10 @@ body { overflow-x: hidden; }
 .upload-buttons { display:flex; gap:12px; }
 .upload-progress { margin-top:12px; text-align:center; color:var(--text-secondary); font-size:14px; }
 
+/* Drag and drop */
+.app-main.drag-over { background:rgba(0,136,204,0.08); }
+.app-main.drag-over .files-section { border:2px dashed var(--accent); }
+
 /* Modal */
 .modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,0.7); display:flex; align-items:center; justify-content:center; z-index:1000; padding:20px; }
 .modal { background:var(--bg-secondary); border:1px solid var(--border); border-radius:16px; padding:24px; width:100%; max-width:400px; }

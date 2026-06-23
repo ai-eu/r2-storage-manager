@@ -47,6 +47,11 @@ const tagToColors = (tag) => {
 };
 
 const isImage = (f) => /\.(jpg|jpeg|png|gif|webp)$/i.test(f);
+const isPdf = (f) => /\.pdf$/i.test(f);
+
+if (typeof pdfjsLib !== "undefined") {
+  pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+}
 
 const generateImageThumbBlob = async (file) => {
   if (!(file instanceof File)) return null;
@@ -77,6 +82,42 @@ const generateImageThumbBlob = async (file) => {
   });
   if (webp instanceof Blob && webp.size > 0) return { blob: webp, ext: "webp" };
   return null;
+};
+
+const generatePdfThumbBlob = async (file) => {
+  if (typeof pdfjsLib === "undefined") return null;
+  if (!(file instanceof File) && !(file instanceof Blob)) return null;
+  try {
+    const buf = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+    const page = await pdf.getPage(1);
+    const tw = 240, th = 320;
+    const baseViewport = page.getViewport({ scale: 1 });
+    const scale = Math.min(tw / baseViewport.width, th / baseViewport.height);
+    const viewport = page.getViewport({ scale });
+    const tmpCanvas = document.createElement("canvas");
+    tmpCanvas.width = Math.ceil(viewport.width);
+    tmpCanvas.height = Math.ceil(viewport.height);
+    const tmpCtx = tmpCanvas.getContext("2d", { alpha: false });
+    if (!tmpCtx) return null;
+    tmpCtx.fillStyle = "#fff";
+    tmpCtx.fillRect(0, 0, tmpCanvas.width, tmpCanvas.height);
+    await page.render({ canvasContext: tmpCtx, viewport }).promise;
+    const canvas = document.createElement("canvas");
+    canvas.width = tw; canvas.height = th;
+    const ctx = canvas.getContext("2d", { alpha: false });
+    if (!ctx) return null;
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, tw, th);
+    const offsetX = (tw - viewport.width) / 2;
+    const offsetY = (th - viewport.height) / 2;
+    ctx.drawImage(tmpCanvas, offsetX, offsetY);
+    const blob = await new Promise((r) => {
+      try { canvas.toBlob((b) => r(b), "image/jpeg", 0.7); } catch { r(null); }
+    });
+    if (blob instanceof Blob && blob.size > 0) return { blob, ext: "jpg" };
+    return null;
+  } catch (e) { console.error("pdf thumb failed:", e); return null; }
 };
 
 createApp({
@@ -248,12 +289,11 @@ createApp({
         const objs = data.objects || [];
 
         // Resolve thumb URLs for objects that have thumb_key
-        const withThumbs = await Promise.all(objs.map(async (o) => {
-          if (!o.thumb_key) return { ...o, thumb_url: null };
-          try {
-            const d = await apiFetch("/api/objects/thumb-download-url?thumb_key=" + encodeURIComponent(o.thumb_key)).then((r) => r.json());
-            return { ...o, thumb_url: d.url || null };
-          } catch { return { ...o, thumb_url: null }; }
+        const withThumbs = objs.map((o) => ({
+          ...o,
+          thumb_url: o.thumb_key
+            ? "/api/objects/thumb-download-url?thumb_key=" + encodeURIComponent(o.thumb_key) + "&token=" + encodeURIComponent(localStorage.getItem("api_key") || "")
+            : null,
         }));
 
         files.value = withThumbs;
@@ -292,46 +332,45 @@ createApp({
       try {
         for (let i = 0; i < list.length; i++) {
           const file = list[i];
-          const thumb = isImage(file.name) ? await generateImageThumbBlob(file) : null;
-
-          // Get presigned upload URL
-          const presign = await apiFetch("/api/objects/upload-url", {
+          // Upload file to R2 via Worker
+          const uploadResp = await apiFetch("/api/objects/upload?filename=" + encodeURIComponent(file.name) + "&content_type=" + encodeURIComponent(file.type || "application/octet-stream"), {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ filename: file.name, content_type: file.type }),
+            body: file,
           }).then((r) => r.json());
+          const fileKey = uploadResp.key;
 
-          // Upload file to R2
-          await fetch(presign.url, { method: "PUT", headers: { "Content-Type": file.type }, body: file });
-
-          // Upload thumb if available
-          let thumbKey = null;
-          if (thumb?.blob && thumb?.ext) {
-            try {
-              const thumbPresign = await apiFetch("/api/objects/thumb-url", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ key: presign.key, ext: thumb.ext }),
-              }).then((r) => r.json());
-
-              await fetch(thumbPresign.url, {
-                method: "PUT",
-                headers: { "Content-Type": thumb.ext === "webp" ? "image/webp" : "image/jpeg" },
-                body: thumb.blob,
-              });
-              thumbKey = thumbPresign.thumb_key;
-            } catch (e) { console.error("thumb upload failed:", e); }
-          }
-
-          // Register metadata
+          // Register metadata first (without thumb)
           await apiFetch("/api/objects/register", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              key: presign.key, filename: file.name, content_type: file.type,
-              size: file.size, tags, thumb_key: thumbKey,
+              key: fileKey, filename: file.name, content_type: file.type,
+              size: file.size, tags, thumb_key: null,
             }),
           });
+
+          // Generate and upload thumb after file is registered
+          try {
+            const thumb = isImage(file.name) ? await generateImageThumbBlob(file)
+              : isPdf(file.name) ? await generatePdfThumbBlob(file)
+              : null;
+            if (thumb?.blob && thumb?.ext) {
+              const thumbResp = await apiFetch("/api/objects/thumb-upload?key=" + encodeURIComponent(fileKey) + "&ext=" + encodeURIComponent(thumb.ext), {
+                method: "POST",
+                headers: { "Content-Type": thumb.ext === "webp" ? "image/webp" : "image/jpeg" },
+                body: thumb.blob,
+              }).then((r) => r.json());
+
+              await apiFetch("/api/objects/register", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  key: fileKey, filename: file.name, content_type: file.type,
+                  size: file.size, tags, thumb_key: thumbResp.thumb_key,
+                }),
+              });
+            }
+          } catch (e) { console.error("thumb generation failed:", e); }
 
           uploadProgress.value = Math.round(((i + 1) / list.length) * 100);
         }
@@ -346,13 +385,39 @@ createApp({
       try { await uploadFiles(input.files); } finally { try { input.value = ""; } catch {} }
     };
 
+    const isDragOver = ref(false);
+    let dragCounter = 0;
+    const onDragOver = (e) => {
+      if (e.dataTransfer?.types?.includes("Files")) {
+        e.dataTransfer.dropEffect = "copy";
+      }
+    };
+    const onDragEnter = (e) => {
+      if (e.dataTransfer?.types?.includes("Files")) {
+        dragCounter++;
+        isDragOver.value = true;
+      }
+    };
+    const onDragLeave = (e) => {
+      dragCounter = Math.max(0, dragCounter - 1);
+      if (dragCounter === 0) isDragOver.value = false;
+    };
+    const onDrop = async (e) => {
+      dragCounter = 0;
+      isDragOver.value = false;
+      const droppedFiles = e.dataTransfer?.files;
+      if (droppedFiles?.length) {
+        await uploadFiles(droppedFiles);
+      }
+    };
+
     // File actions
     const viewFile = async (file) => {
       try {
         const name = file.filename || file.key || "";
-        const data = await apiFetch("/api/objects/download-url?key=" + encodeURIComponent(file.key)).then((r) => r.json());
-        if (isImage(name)) { openViewer(data.url, name); }
-        else { window.open(data.url, "_blank"); }
+        const url = "/api/objects/download-url?key=" + encodeURIComponent(file.key) + "&token=" + encodeURIComponent(localStorage.getItem("api_key") || "");
+        if (isImage(name)) { openViewer(url, name); }
+        else { window.open(url, "_blank"); }
       } catch (e) { console.error(e); }
     };
 
@@ -372,9 +437,9 @@ createApp({
 
     const downloadFile = async (file) => {
       try {
-        const data = await apiFetch("/api/objects/download-url?key=" + encodeURIComponent(file.key)).then((r) => r.json());
+        const url = "/api/objects/download-url?key=" + encodeURIComponent(file.key) + "&token=" + encodeURIComponent(localStorage.getItem("api_key") || "");
         const a = document.createElement("a");
-        a.href = data.url; a.download = file.filename || file.key.split("/").pop() || "download";
+        a.href = url; a.download = file.filename || file.key.split("/").pop() || "download";
         a.target = "_blank"; document.body.appendChild(a); a.click(); document.body.removeChild(a);
       } catch (e) { console.error(e); }
     };
@@ -388,7 +453,44 @@ createApp({
       } catch (e) { console.error(e); }
     };
 
-    onMounted(() => { fetchFiles(); fetchTopTags(); fetchAllTags(); });
+    const generateMissingPdfThumbs = async () => {
+      const pdfsWithoutThumb = files.value.filter(
+        (f) => !f.thumb_key && isPdf(f.filename || f.key)
+      );
+      if (!pdfsWithoutThumb.length) return;
+      for (const file of pdfsWithoutThumb) {
+        try {
+          const resp = await apiFetch("/api/objects/download-url?key=" + encodeURIComponent(file.key));
+          const blob = await resp.blob();
+          const thumb = await generatePdfThumbBlob(blob);
+          if (!thumb?.blob) continue;
+          const thumbResp = await apiFetch("/api/objects/thumb-upload?key=" + encodeURIComponent(file.key) + "&ext=" + encodeURIComponent(thumb.ext), {
+            method: "POST",
+            headers: { "Content-Type": "image/jpeg" },
+            body: thumb.blob,
+          }).then((r) => r.json());
+          await apiFetch("/api/objects/register", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              key: file.key,
+              filename: file.filename,
+              content_type: file.content_type,
+              size: file.size,
+              uploaded_at: file.uploaded_at,
+              tags: file.tags || [],
+              thumb_key: thumbResp.thumb_key,
+            }),
+          });
+          const idx = files.value.findIndex((f) => f.key === file.key);
+          if (idx !== -1) {
+            files.value[idx] = { ...files.value[idx], thumb_key: thumbResp.thumb_key, thumb_url: "/api/objects/thumb-download-url?thumb_key=" + encodeURIComponent(thumbResp.thumb_key) + "&token=" + encodeURIComponent(localStorage.getItem("api_key") || "") };
+          }
+        } catch (e) { console.error("pdf thumb gen failed for", file.key, e); }
+      }
+    };
+
+    onMounted(() => { fetchFiles().then(generateMissingPdfThumbs); fetchTopTags(); fetchAllTags(); });
 
     return {
       files, loading, uploading, uploadProgress,
@@ -397,8 +499,9 @@ createApp({
       viewerOpen, viewerUrl, viewerName, viewerStage, viewerImg, viewerImgStyle,
       onViewerImgLoad, onViewerPointerDown, onViewerPointerMove, onViewerPointerUp,
       menuKey, tagToColors, refreshAll, setActiveTag, clearActiveTag,
-      handleFileUpload, deleteFile, isImage, viewFile, closeViewer,
+      handleFileUpload, deleteFile, isImage, isPdf, viewFile, closeViewer,
       getExt, getExtIcon, closeTagsModal, editTags, downloadFile, logout,
+      isDragOver, onDragOver, onDragEnter, onDragLeave, onDrop,
     };
   },
 }).mount("#app");
