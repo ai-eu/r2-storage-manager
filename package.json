@@ -7,13 +7,14 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "setup": "node scripts/setup.js",
-    "reset": "node scripts/reset.js"
+    "reset": "node scripts/reset.js",
+    "migrate": "node scripts/migrate-documents.js"
   },
   "dependencies": {
     "aws4fetch": "^1.0.20",
     "hono": "^4.0.0"
   },
   "devDependencies": {
-    "wrangler": "^4.78.0"
+    "wrangler": "^4.103.0"
   }
 }

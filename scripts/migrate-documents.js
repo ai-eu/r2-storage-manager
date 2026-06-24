@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 const { spawnSync } = require("child_process");
-const fs = require("fs");
 const path = require("path");
 const readline = require("readline");
 
@@ -30,30 +29,30 @@ function wrangler(args, opts = {}) {
   return out;
 }
 
-function d1Execute(sql, remote = true) {
-  const args = ["d1", "execute", "r2-storage", "--command", sql];
-  if (remote) args.push("--remote");
-  return wrangler(args);
+function d1Execute(sql) {
+  return wrangler(["d1", "execute", "r2-storage", "--command", sql, "--remote"]);
 }
 
-function d1Query(sql, remote = true) {
-  const args = ["d1", "execute", "r2-storage", "--command", sql, "--json"];
-  if (remote) args.push("--remote");
-  const out = wrangler(args, { ignoreError: true });
+function d1Count(sql) {
+  const out = wrangler(["d1", "execute", "r2-storage", "--command", sql, "--json", "--remote"], { ignoreError: true });
   try {
-    return JSON.parse(out);
+    const parsed = JSON.parse(out);
+    const row = Array.isArray(parsed) ? parsed[0] : parsed;
+    const vals = row ? Object.values(row) : [];
+    return vals[0] ?? "?";
   } catch {
-    return [];
+    return "?";
   }
 }
 
 async function main() {
   console.log("\n📦 R2 Storage Manager — Migration to documents\n");
   console.log("This script migrates existing objects to the new documents schema:");
-  console.log("  - Creates a 'documents' row for each object without document_id");
+  console.log("  - Creates documents rows for objects without one");
   console.log("  - Sets document_id and page_number on objects");
   console.log("  - Copies tags from object_tags to document_tags");
   console.log("  - Runs against the REMOTE D1 database\n");
+  console.log("  - Safe to re-run (uses ON CONFLICT/INSERT OR IGNORE)\n");
 
   const confirm = await ask("Type YES to continue: ");
   if (confirm !== "YES") {
@@ -62,8 +61,8 @@ async function main() {
     return;
   }
 
-  // 1. Ensure schema (tables + columns) exists
-  console.log("\n1/5  Ensuring schema exists...");
+  // 1. Ensure schema
+  console.log("\n1/4  Ensuring schema exists...");
   try {
     d1Execute(`CREATE TABLE IF NOT EXISTS documents (
       id TEXT PRIMARY KEY,
@@ -77,18 +76,6 @@ async function main() {
       tag TEXT NOT NULL,
       PRIMARY KEY (document_id, tag)
     )`);
-
-    const cols = d1Query(`SELECT name FROM pragma_table_info('objects')`);
-    const colNames = new Set((Array.isArray(cols) ? cols : []).flatMap((r) => Object.values(r)));
-    if (!colNames.has("document_id")) {
-      d1Execute(`ALTER TABLE objects ADD COLUMN document_id TEXT`);
-      console.log("   Added column document_id");
-    }
-    if (!colNames.has("page_number")) {
-      d1Execute(`ALTER TABLE objects ADD COLUMN page_number INTEGER`);
-      console.log("   Added column page_number");
-    }
-
     d1Execute(`CREATE INDEX IF NOT EXISTS idx_objects_document ON objects(document_id)`);
     d1Execute(`CREATE INDEX IF NOT EXISTS idx_documents_uploaded ON documents(uploaded_at)`);
     d1Execute(`CREATE INDEX IF NOT EXISTS idx_document_tags_tag ON document_tags(tag)`);
@@ -100,44 +87,24 @@ async function main() {
     return;
   }
 
-  // 2. Find objects without document_id
-  console.log("\n2/5  Finding objects without document_id...");
-  let orphans = [];
+  // 2. Create documents for all objects that don't have one yet
+  //    Uses INSERT...SELECT to avoid JS parsing issues
+  console.log("\n2/4  Creating documents for orphan objects...");
   try {
-    orphans = d1Query(`SELECT key, filename, content_type, size, uploaded_at, thumb_key FROM objects WHERE document_id IS NULL`);
-    orphans = Array.isArray(orphans) ? orphans : [];
-    console.log(`   Found ${orphans.length} object(s) to migrate`);
+    d1Execute(
+      `INSERT OR IGNORE INTO documents(id, title, page_count, uploaded_at, thumb_key)
+       SELECT key, filename, 1, uploaded_at, thumb_key
+       FROM objects
+       WHERE document_id IS NULL
+          OR document_id NOT IN (SELECT id FROM documents)`
+    );
+    console.log("   Documents created (if any orphans)");
   } catch (e) {
     console.log("   Error: " + (e.message || "").slice(0, 200));
-    rl.close();
-    return;
   }
 
-  if (orphans.length === 0) {
-    console.log("\nNothing to migrate. All objects already have document_id.");
-    rl.close();
-    return;
-  }
-
-  // 3. Create documents for orphans
-  console.log(`\n3/5  Creating ${orphans.length} document(s)...`);
-  let created = 0;
-  for (const obj of orphans) {
-    try {
-      d1Execute(
-        `INSERT INTO documents(id, title, page_count, uploaded_at, thumb_key)
-         VALUES('${obj.key.replace(/'/g, "''")}', '${(obj.filename || "").replace(/'/g, "''")}', 1, ${obj.uploaded_at || Date.now()}, ${obj.thumb_key ? "'" + obj.thumb_key.replace(/'/g, "''") + "'" : "NULL"})
-         ON CONFLICT(id) DO NOTHING`
-      );
-      created++;
-    } catch (e) {
-      console.log(`   Failed for ${obj.key}: ${(e.message || "").slice(0, 100)}`);
-    }
-  }
-  console.log(`   Created ${created} document(s)`);
-
-  // 4. Update objects with document_id and page_number
-  console.log(`\n4/5  Updating objects with document_id and page_number...`);
+  // 3. Update objects: set document_id = key, page_number = 1 where missing
+  console.log("\n3/4  Updating objects with document_id and page_number...");
   try {
     d1Execute(`UPDATE objects SET document_id = key, page_number = 1 WHERE document_id IS NULL`);
     console.log("   Objects updated");
@@ -145,8 +112,8 @@ async function main() {
     console.log("   Error: " + (e.message || "").slice(0, 200));
   }
 
-  // 5. Migrate tags from object_tags to document_tags
-  console.log(`\n5/5  Migrating tags from object_tags to document_tags...`);
+  // 4. Migrate tags
+  console.log("\n4/4  Migrating tags from object_tags to document_tags...");
   try {
     d1Execute(
       `INSERT OR IGNORE INTO document_tags(document_id, tag)
@@ -158,22 +125,15 @@ async function main() {
   }
 
   // Verify
-  console.log("\n6/6  Verifying migration...");
-  try {
-    const remaining = d1Query(`SELECT COUNT(*) as cnt FROM objects WHERE document_id IS NULL`);
-    const cnt = Array.isArray(remaining) ? Object.values(remaining[0] || {})[0] : "?";
-    console.log(`   Objects without document_id: ${cnt}`);
-
-    const docCount = d1Query(`SELECT COUNT(*) as cnt FROM documents`);
-    const dc = Array.isArray(docCount) ? Object.values(docCount[0] || {})[0] : "?";
-    console.log(`   Total documents: ${dc}`);
-
-    const tagCount = d1Query(`SELECT COUNT(*) as cnt FROM document_tags`);
-    const tc = Array.isArray(tagCount) ? Object.values(tagCount[0] || {})[0] : "?";
-    console.log(`   Total document_tags: ${tc}`);
-  } catch (e) {
-    console.log("   Verification error: " + (e.message || "").slice(0, 200));
-  }
+  console.log("\n── Verification ──");
+  const orphanCount = d1Count(`SELECT COUNT(*) as c FROM objects WHERE document_id IS NULL`);
+  console.log(`   Objects without document_id: ${orphanCount}`);
+  const docCount = d1Count(`SELECT COUNT(*) as c FROM documents`);
+  console.log(`   Total documents: ${docCount}`);
+  const objCount = d1Count(`SELECT COUNT(*) as c FROM objects`);
+  console.log(`   Total objects: ${objCount}`);
+  const tagCount = d1Count(`SELECT COUNT(*) as c FROM document_tags`);
+  console.log(`   Total document_tags: ${tagCount}`);
 
   console.log("\n" + "=".repeat(60));
   console.log("Migration complete.");
