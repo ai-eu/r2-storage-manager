@@ -47,19 +47,20 @@
 
       <div class="files-section">
         <div v-if="loading" class="loading-state"><span>Loading...</span></div>
-        <div v-else-if="files.length===0" class="empty-state"><span>No files</span></div>
+        <div v-else-if="documents.length===0" class="empty-state"><span>No documents</span></div>
         <div v-else class="files-grid">
-          <div v-for="file in files" :key="file.key" class="file-card">
-            <div class="file-card-thumb" @click="viewFile(file)">
-              <img v-if="file.thumb_url" :src="file.thumb_url" />
-              <span v-else class="ext-icon">{{ getExtIcon(getExt(file.filename||file.key)) }}</span>
+          <div v-for="doc in documents" :key="doc.id" class="file-card">
+            <div class="file-card-thumb" @click="viewDocument(doc)">
+              <img v-if="doc.thumb_url" :src="doc.thumb_url" />
+              <span v-else class="ext-icon">{{ getExtIcon(getExt(doc.title||doc.id)) }}</span>
             </div>
-            <button @click.stop="menuKey=menuKey===file.key?null:file.key"
+            <div v-if="doc.page_count > 1" class="file-card-pages-badge">{{ doc.page_count }} pages</div>
+            <button @click.stop="menuKey=menuKey===doc.id?null:doc.id"
               class="file-card-menu-btn">⋯</button>
-            <div v-if="menuKey===file.key" class="file-card-menu">
-              <button @click.stop="menuKey=null;editTags(file)" title="Tags">🏷</button>
-              <button @click.stop="menuKey=null;downloadFile(file)" title="Download">⬇</button>
-              <button @click.stop="menuKey=null;deleteFile(file)" class="delete" title="Delete">🗑</button>
+            <div v-if="menuKey===doc.id" class="file-card-menu">
+              <button @click.stop="menuKey=null;editTags(doc)" title="Tags">🏷</button>
+              <button @click.stop="menuKey=null;viewDocument(doc)" title="Open">📂</button>
+              <button @click.stop="menuKey=null;deleteDocument(doc)" class="delete" title="Delete">🗑</button>
             </div>
           </div>
         </div>
@@ -72,6 +73,7 @@
           <div><button @click="$refs.fileInput.click()" class="btn-primary">Upload files</button></div>
         </div>
         <div v-if="uploading" class="upload-progress">Uploading: {{ uploadProgress }}%</div>
+        <div v-if="uploadError" class="upload-error">{{ uploadError }}</div>
       </div>
     </main>
 
@@ -88,6 +90,26 @@
       </div>
     </div>
 
+    <!-- Pages view (multi-page document) -->
+    <div v-if="pagesViewOpen" class="modal-overlay" @click.self="closePagesView">
+      <div class="pages-view">
+        <div class="pages-view-header">
+          <span class="pages-view-title">{{ pagesViewTitle }}</span>
+          <button @click="closePagesView" class="viewer-close-btn">Close</button>
+        </div>
+        <div class="pages-grid">
+          <div v-for="(page, i) in pagesViewList" :key="page.key" class="page-card"
+            @click="openViewerFromPages(i)">
+            <span class="page-number">{{ i + 1 }}</span>
+            <div class="page-card-thumb">
+              <img v-if="page.thumb_url" :src="page.thumb_url" />
+              <span v-else class="ext-icon">{{ getExtIcon(getExt(page.filename||page.key)) }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Image viewer -->
     <div v-if="viewerOpen" class="viewer-overlay">
       <div class="viewer-header">
@@ -100,6 +122,13 @@
         <img ref="viewerImg" :src="viewerUrl" :style="viewerImgStyle"
           draggable="false" @load="onViewerImgLoad" />
       </div>
+      <button v-if="viewerPages.length > 1 && viewerPageIndex > 0"
+        @click="viewerPrev" class="viewer-nav-btn viewer-nav-prev">←</button>
+      <button v-if="viewerPages.length > 1 && viewerPageIndex < viewerPages.length - 1"
+        @click="viewerNext" class="viewer-nav-btn viewer-nav-next">→</button>
+      <span v-if="viewerPages.length > 1" class="viewer-page-indicator">
+        Page {{ viewerPageIndex + 1 }} of {{ viewerPages.length }}
+      </span>
     </div>
   </div>
 

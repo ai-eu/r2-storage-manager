@@ -124,16 +124,23 @@ createApp({
   setup() {
     if (!checkAuth()) { window.location.href = "/"; return {}; }
 
-    const files = ref([]);
+    const documents = ref([]);
     const loading = ref(false);
     const uploading = ref(false);
     const uploadProgress = ref(0);
+    const uploadError = ref("");
     const activeTag = ref("");
     const tagQuery = ref("");
     const topTags = ref([]);
     const relatedTags = ref([]);
     const allTags = ref([]);
     const menuKey = ref(null);
+
+    // Pages view (multi-page document)
+    const pagesViewOpen = ref(false);
+    const pagesViewTitle = ref("");
+    const pagesViewList = ref([]);
+    const pagesViewDocId = ref(null);
 
     const normalizedTagQuery = computed(() => normalizeTag(tagQuery.value));
     const cloudTags = computed(() => {
@@ -165,6 +172,8 @@ createApp({
     const viewerOpen = ref(false);
     const viewerUrl = ref("");
     const viewerName = ref("");
+    const viewerPages = ref([]);
+    const viewerPageIndex = ref(0);
     const viewerStage = ref(null);
     const viewerImg = ref(null);
     const viewerScale = ref(1);
@@ -242,13 +251,36 @@ createApp({
       if (viewerPointers.size < 2) viewerPinchStart = null;
       if (viewerPointers.size === 0) viewerDragLast = null;
     };
-    const openViewer = async (url, name) => {
+    const openViewer = async (url, name, pages, startIndex) => {
       viewerUrl.value = url || ""; viewerName.value = name || "";
+      viewerPages.value = Array.isArray(pages) ? pages : [];
+      viewerPageIndex.value = startIndex || 0;
       viewerOpen.value = true; resetViewerTransform(); await nextTick();
     };
     const closeViewer = () => {
       viewerOpen.value = false; viewerUrl.value = ""; viewerName.value = "";
+      viewerPages.value = []; viewerPageIndex.value = 0;
       resetViewerTransform();
+    };
+    const viewerPrev = () => {
+      if (viewerPageIndex.value > 0) {
+        viewerPageIndex.value--;
+        viewerUrl.value = viewerPages.value[viewerPageIndex.value];
+        resetViewerTransform();
+      }
+    };
+    const viewerNext = () => {
+      if (viewerPageIndex.value < viewerPages.value.length - 1) {
+        viewerPageIndex.value++;
+        viewerUrl.value = viewerPages.value[viewerPageIndex.value];
+        resetViewerTransform();
+      }
+    };
+    const onViewerKeydown = (e) => {
+      if (!viewerOpen.value) return;
+      if (e.key === "ArrowLeft") viewerPrev();
+      else if (e.key === "ArrowRight") viewerNext();
+      else if (e.key === "Escape") closeViewer();
     };
 
     // Auth
@@ -281,102 +313,118 @@ createApp({
       } catch { relatedTags.value = []; }
     };
 
-    const fetchFiles = async () => {
+    const fetchDocuments = async () => {
       loading.value = true;
       try {
         const qs = activeTag.value ? "?tag=" + encodeURIComponent(activeTag.value) : "";
-        const data = await apiFetch("/api/objects" + qs).then((r) => r.json());
-        const objs = data.objects || [];
-
-        // Resolve thumb URLs for objects that have thumb_key
-        const withThumbs = objs.map((o) => ({
-          ...o,
-          thumb_url: o.thumb_key
-            ? "/api/objects/thumb-download-url?thumb_key=" + encodeURIComponent(o.thumb_key) + "&token=" + encodeURIComponent(localStorage.getItem("api_key") || "")
+        const data = await apiFetch("/api/documents" + qs).then((r) => r.json());
+        const docs = data.documents || [];
+        const withThumbs = docs.map((d) => ({
+          ...d,
+          thumb_url: d.thumb_key
+            ? "/api/objects/thumb-download-url?thumb_key=" + encodeURIComponent(d.thumb_key) + "&token=" + encodeURIComponent(localStorage.getItem("api_key") || "")
             : null,
         }));
-
-        files.value = withThumbs;
+        documents.value = withThumbs;
       } catch (e) { console.error(e); }
       finally { loading.value = false; }
     };
 
     const refreshAll = async () => {
       if (activeTag.value) {
-        await Promise.all([fetchFiles(), fetchRelatedTags(activeTag.value), fetchAllTags()]);
+        await Promise.all([fetchDocuments(), fetchRelatedTags(activeTag.value), fetchAllTags()]);
         return;
       }
-      await Promise.all([fetchFiles(), fetchTopTags(), fetchAllTags()]);
+      await Promise.all([fetchDocuments(), fetchTopTags(), fetchAllTags()]);
     };
 
     const setActiveTag = async (tag) => {
       activeTag.value = normalizeTag(tag); tagQuery.value = "";
-      await Promise.all([fetchFiles(), fetchRelatedTags(activeTag.value)]);
+      await Promise.all([fetchDocuments(), fetchRelatedTags(activeTag.value)]);
     };
     const clearActiveTag = async () => {
       activeTag.value = ""; tagQuery.value = ""; relatedTags.value = [];
-      await Promise.all([fetchFiles(), fetchTopTags(), fetchAllTags()]);
+      await Promise.all([fetchDocuments(), fetchTopTags(), fetchAllTags()]);
     };
 
     // Upload
-    const uploadFiles = async (filesToUpload, opts) => {
+    const uploadFiles = async (filesToUpload) => {
       const list = Array.from(filesToUpload || []).filter((f) => f instanceof File);
       if (!list.length) return;
 
-      const title = opts?.tagsTitle || (list.length === 1 ? "Enter tags for file" : "Enter tags for all files");
+      list.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+
+      const title = list.length === 1 ? "Enter tags for file" : "Enter tags for all files";
       const result = await openTagsModal({ title, initialValue: "" });
       if (result === null) return;
       const tags = parseTagsInput(result);
 
-      uploading.value = true; uploadProgress.value = 0;
+      uploading.value = true;
+      uploadProgress.value = 0;
+      uploadError.value = "";
+
+      const uploadedKeys = [];
       try {
         for (let i = 0; i < list.length; i++) {
           const file = list[i];
-          // Upload file to R2 via Worker
-          const uploadResp = await apiFetch("/api/objects/upload?filename=" + encodeURIComponent(file.name) + "&content_type=" + encodeURIComponent(file.type || "application/octet-stream"), {
-            method: "POST",
-            body: file,
-          }).then((r) => r.json());
-          const fileKey = uploadResp.key;
-
-          // Register metadata first (without thumb)
-          await apiFetch("/api/objects/register", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              key: fileKey, filename: file.name, content_type: file.type,
-              size: file.size, tags, thumb_key: null,
-            }),
-          });
-
-          // Generate and upload thumb after file is registered
-          try {
-            const thumb = isImage(file.name) ? await generateImageThumbBlob(file)
-              : isPdf(file.name) ? await generatePdfThumbBlob(file)
-              : null;
-            if (thumb?.blob && thumb?.ext) {
-              const thumbResp = await apiFetch("/api/objects/thumb-upload?key=" + encodeURIComponent(fileKey) + "&ext=" + encodeURIComponent(thumb.ext), {
-                method: "POST",
-                headers: { "Content-Type": thumb.ext === "webp" ? "image/webp" : "image/jpeg" },
-                body: thumb.blob,
-              }).then((r) => r.json());
-
-              await apiFetch("/api/objects/register", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  key: fileKey, filename: file.name, content_type: file.type,
-                  size: file.size, tags, thumb_key: thumbResp.thumb_key,
-                }),
-              });
-            }
-          } catch (e) { console.error("thumb generation failed:", e); }
-
+          const uploadResp = await apiFetch(
+            "/api/objects/upload?filename=" + encodeURIComponent(file.name) +
+            "&content_type=" + encodeURIComponent(file.type || "application/octet-stream"),
+            { method: "POST", body: file },
+          ).then((r) => r.json());
+          uploadedKeys.push(uploadResp.key);
           uploadProgress.value = Math.round(((i + 1) / list.length) * 100);
         }
+
+        let thumbKey = null;
+        const firstFile = list[0];
+        try {
+          const thumb = isImage(firstFile.name) ? await generateImageThumbBlob(firstFile)
+            : isPdf(firstFile.name) ? await generatePdfThumbBlob(firstFile)
+            : null;
+          if (thumb?.blob && thumb?.ext) {
+            const firstKey = uploadedKeys[0];
+            const thumbResp = await apiFetch(
+              "/api/objects/thumb-upload?key=" + encodeURIComponent(firstKey) +
+              "&ext=" + encodeURIComponent(thumb.ext),
+              { method: "POST", headers: { "Content-Type": thumb.ext === "webp" ? "image/webp" : "image/jpeg" }, body: thumb.blob },
+            ).then((r) => r.json());
+            thumbKey = thumbResp.thumb_key;
+          }
+        } catch (e) { console.error("thumb generation failed:", e); }
+
+        const docId = "doc_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
+        const pages = list.map((file, i) => ({
+          key: uploadedKeys[i],
+          filename: file.name,
+          content_type: file.type,
+          size: file.size,
+          page_number: i + 1,
+        }));
+
+        await apiFetch("/api/documents/register", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id: docId,
+            title: firstFile.name,
+            pages,
+            tags,
+            thumb_key: thumbKey,
+          }),
+        });
+
         await refreshAll();
-      } catch (e) { console.error(e); }
-      finally { uploading.value = false; uploadProgress.value = 0; }
+      } catch (e) {
+        console.error("upload failed:", e);
+        uploadError.value = e?.message || "Upload failed. All files will be cleaned up.";
+        for (const key of uploadedKeys) {
+          try { await apiFetch("/api/objects/" + encodeURIComponent(key), { method: "DELETE" }); } catch {}
+        }
+      } finally {
+        uploading.value = false;
+        uploadProgress.value = 0;
+      }
     };
 
     const handleFileUpload = async (event) => {
@@ -411,96 +459,105 @@ createApp({
       }
     };
 
-    // File actions
-    const viewFile = async (file) => {
+    // Document actions
+    const viewDocument = async (doc) => {
       try {
-        const name = file.filename || file.key || "";
-        const url = "/api/objects/download-url?key=" + encodeURIComponent(file.key) + "&token=" + encodeURIComponent(localStorage.getItem("api_key") || "");
-        if (isImage(name)) { openViewer(url, name); }
-        else { window.open(url, "_blank"); }
+        if (doc.page_count === 1) {
+          const resp = await apiFetch("/api/documents/" + encodeURIComponent(doc.id) + "/pages").then((r) => r.json());
+          const page = (resp.pages || [])[0];
+          if (!page) return;
+          const name = page.filename || page.key || "";
+          const url = "/api/objects/download-url?key=" + encodeURIComponent(page.key) + "&token=" + encodeURIComponent(localStorage.getItem("api_key") || "");
+          if (isImage(name)) { openViewer(url, name); }
+          else { window.open(url, "_blank"); }
+        } else {
+          const resp = await apiFetch("/api/documents/" + encodeURIComponent(doc.id) + "/pages").then((r) => r.json());
+          pagesViewList.value = (resp.pages || []).map((p) => ({
+            ...p,
+            thumb_url: p.thumb_key
+              ? "/api/objects/thumb-download-url?thumb_key=" + encodeURIComponent(p.thumb_key) + "&token=" + encodeURIComponent(localStorage.getItem("api_key") || "")
+              : null,
+          }));
+          pagesViewTitle.value = doc.title || "Document";
+          pagesViewDocId.value = doc.id;
+          pagesViewOpen.value = true;
+        }
       } catch (e) { console.error(e); }
     };
 
-    const editTags = async (file) => {
-      const initial = Array.isArray(file.tags) ? file.tags.join(" ") : "";
+    const closePagesView = () => {
+      pagesViewOpen.value = false;
+      pagesViewList.value = [];
+      pagesViewTitle.value = "";
+      pagesViewDocId.value = null;
+    };
+
+    const openViewerFromPages = (pageIndex) => {
+      const page = pagesViewList.value[pageIndex];
+      if (!page) return;
+      const name = page.filename || page.key || "";
+      const token = encodeURIComponent(localStorage.getItem("api_key") || "");
+      const urls = pagesViewList.value.map((p) =>
+        "/api/objects/download-url?key=" + encodeURIComponent(p.key) + "&token=" + token
+      );
+      if (isImage(name)) {
+        openViewer(urls[pageIndex], name, urls, pageIndex);
+      } else {
+        window.open(urls[pageIndex], "_blank");
+      }
+    };
+
+    const editTags = async (doc) => {
+      const initial = Array.isArray(doc.tags) ? doc.tags.join(" ") : "";
       const result = await openTagsModal({ title: "Edit tags", initialValue: initial });
       if (result === null) return;
       try {
-        await apiFetch("/api/objects/tags", {
+        await apiFetch("/api/documents/" + encodeURIComponent(doc.id) + "/tags", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ key: file.key, tags: parseTagsInput(result) }),
+          body: JSON.stringify({ tags: parseTagsInput(result) }),
         });
         await refreshAll();
       } catch (e) { console.error(e); }
     };
 
-    const downloadFile = async (file) => {
+    const downloadPage = async (page) => {
       try {
-        const url = "/api/objects/download-url?key=" + encodeURIComponent(file.key) + "&token=" + encodeURIComponent(localStorage.getItem("api_key") || "");
+        const url = "/api/objects/download-url?key=" + encodeURIComponent(page.key) + "&token=" + encodeURIComponent(localStorage.getItem("api_key") || "");
         const a = document.createElement("a");
-        a.href = url; a.download = file.filename || file.key.split("/").pop() || "download";
+        a.href = url; a.download = page.filename || page.key.split("/").pop() || "download";
         a.target = "_blank"; document.body.appendChild(a); a.click(); document.body.removeChild(a);
       } catch (e) { console.error(e); }
     };
 
-    const deleteFile = async (file) => {
-      const key = typeof file === "string" ? file : file?.key;
-      if (!key || !confirm("Delete this file?")) return;
+    const deleteDocument = async (doc) => {
+      const id = typeof doc === "string" ? doc : doc?.id;
+      if (!id || !confirm("Delete this document" + (doc?.page_count > 1 ? " with " + doc.page_count + " pages?" : "?"))) return;
       try {
-        await apiFetch("/api/objects/" + encodeURIComponent(key), { method: "DELETE" });
+        await apiFetch("/api/documents/" + encodeURIComponent(id), { method: "DELETE" });
         await refreshAll();
       } catch (e) { console.error(e); }
     };
 
-    const generateMissingPdfThumbs = async () => {
-      const pdfsWithoutThumb = files.value.filter(
-        (f) => !f.thumb_key && isPdf(f.filename || f.key)
-      );
-      if (!pdfsWithoutThumb.length) return;
-      for (const file of pdfsWithoutThumb) {
-        try {
-          const resp = await apiFetch("/api/objects/download-url?key=" + encodeURIComponent(file.key));
-          const blob = await resp.blob();
-          const thumb = await generatePdfThumbBlob(blob);
-          if (!thumb?.blob) continue;
-          const thumbResp = await apiFetch("/api/objects/thumb-upload?key=" + encodeURIComponent(file.key) + "&ext=" + encodeURIComponent(thumb.ext), {
-            method: "POST",
-            headers: { "Content-Type": "image/jpeg" },
-            body: thumb.blob,
-          }).then((r) => r.json());
-          await apiFetch("/api/objects/register", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              key: file.key,
-              filename: file.filename,
-              content_type: file.content_type,
-              size: file.size,
-              uploaded_at: file.uploaded_at,
-              tags: file.tags || [],
-              thumb_key: thumbResp.thumb_key,
-            }),
-          });
-          const idx = files.value.findIndex((f) => f.key === file.key);
-          if (idx !== -1) {
-            files.value[idx] = { ...files.value[idx], thumb_key: thumbResp.thumb_key, thumb_url: "/api/objects/thumb-download-url?thumb_key=" + encodeURIComponent(thumbResp.thumb_key) + "&token=" + encodeURIComponent(localStorage.getItem("api_key") || "") };
-          }
-        } catch (e) { console.error("pdf thumb gen failed for", file.key, e); }
-      }
-    };
-
-    onMounted(() => { fetchFiles().then(generateMissingPdfThumbs); fetchTopTags(); fetchAllTags(); });
+    onMounted(() => {
+      fetchDocuments();
+      fetchTopTags();
+      fetchAllTags();
+      window.addEventListener("keydown", onViewerKeydown);
+    });
 
     return {
-      files, loading, uploading, uploadProgress,
+      documents, loading, uploading, uploadProgress, uploadError,
       activeTag, tagQuery, topTags, relatedTags, cloudTags,
       tagModalOpen, tagModalTitle, tagModalInput,
       viewerOpen, viewerUrl, viewerName, viewerStage, viewerImg, viewerImgStyle,
+      viewerPages, viewerPageIndex,
       onViewerImgLoad, onViewerPointerDown, onViewerPointerMove, onViewerPointerUp,
+      viewerPrev, viewerNext, closeViewer,
+      pagesViewOpen, pagesViewTitle, pagesViewList, closePagesView, openViewerFromPages,
       menuKey, tagToColors, refreshAll, setActiveTag, clearActiveTag,
-      handleFileUpload, deleteFile, isImage, isPdf, viewFile, closeViewer,
-      getExt, getExtIcon, closeTagsModal, editTags, downloadFile, logout,
+      handleFileUpload, deleteDocument, isImage, isPdf, viewDocument,
+      getExt, getExtIcon, closeTagsModal, editTags, downloadPage, logout,
       isDragOver, onDragOver, onDragEnter, onDragLeave, onDrop,
     };
   },

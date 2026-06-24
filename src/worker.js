@@ -100,6 +100,32 @@ const ensureSchema = async (db) => {
     )`,
   ).run();
   await db.prepare(
+    `CREATE TABLE IF NOT EXISTS documents (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      page_count INTEGER NOT NULL DEFAULT 1,
+      uploaded_at INTEGER NOT NULL,
+      thumb_key TEXT
+    )`,
+  ).run();
+  await db.prepare(
+    `CREATE TABLE IF NOT EXISTS document_tags (
+      document_id TEXT NOT NULL,
+      tag TEXT NOT NULL,
+      PRIMARY KEY (document_id, tag)
+    )`,
+  ).run();
+
+  const cols = await db.prepare("PRAGMA table_info(objects)").all();
+  const colNames = new Set((cols.results || []).map((r) => r.name));
+  if (!colNames.has("document_id")) {
+    await db.prepare("ALTER TABLE objects ADD COLUMN document_id TEXT").run();
+  }
+  if (!colNames.has("page_number")) {
+    await db.prepare("ALTER TABLE objects ADD COLUMN page_number INTEGER").run();
+  }
+
+  await db.prepare(
     "CREATE INDEX IF NOT EXISTS idx_objects_uploaded ON objects(uploaded_at)",
   ).run();
   await db.prepare(
@@ -107,6 +133,18 @@ const ensureSchema = async (db) => {
   ).run();
   await db.prepare(
     "CREATE INDEX IF NOT EXISTS idx_tags_key ON object_tags(key)",
+  ).run();
+  await db.prepare(
+    "CREATE INDEX IF NOT EXISTS idx_objects_document ON objects(document_id)",
+  ).run();
+  await db.prepare(
+    "CREATE INDEX IF NOT EXISTS idx_documents_uploaded ON documents(uploaded_at)",
+  ).run();
+  await db.prepare(
+    "CREATE INDEX IF NOT EXISTS idx_document_tags_tag ON document_tags(tag)",
+  ).run();
+  await db.prepare(
+    "CREATE INDEX IF NOT EXISTS idx_document_tags_doc ON document_tags(document_id)",
   ).run();
   schemaReady = true;
 };
@@ -268,6 +306,227 @@ app.put("/api/objects/tags", async (c) => {
   }
 });
 
+// ── POST /api/documents/register ──
+app.post("/api/documents/register", async (c) => {
+  const db = c.env.DB;
+  if (!db) return c.json({ error: "DB not configured" }, 500);
+
+  const body = await c.req.json().catch(() => null);
+  if (!body) return c.json({ error: "Invalid JSON" }, 400);
+
+  const { id, title, pages, thumb_key } = body;
+  const tags = normalizeTags(body.tags);
+  const uploadedAt = Number.isFinite(body.uploaded_at) ? body.uploaded_at : Date.now();
+
+  if (!id || typeof title !== "string" || !title.trim()) {
+    return c.json({ error: "id and title required" }, 400);
+  }
+  if (!Array.isArray(pages) || pages.length === 0) {
+    return c.json({ error: "pages array required" }, 400);
+  }
+
+  try {
+    await ensureSchema(db);
+    const stmts = [
+      db.prepare(
+        `INSERT INTO documents(id, title, page_count, uploaded_at, thumb_key)
+         VALUES(?,?,?,?,?)
+         ON CONFLICT(id) DO UPDATE SET
+           title=excluded.title, page_count=excluded.page_count,
+           uploaded_at=excluded.uploaded_at, thumb_key=excluded.thumb_key`,
+      ).bind(id, title.trim(), pages.length, uploadedAt, thumb_key || null),
+      db.prepare("DELETE FROM document_tags WHERE document_id=?").bind(id),
+    ];
+
+    for (const tag of tags) {
+      stmts.push(
+        db.prepare(
+          "INSERT OR IGNORE INTO document_tags(document_id, tag) VALUES(?,?)",
+        ).bind(id, tag),
+      );
+    }
+
+    for (const p of pages) {
+      if (!p.key || typeof p.filename !== "string" || !p.filename.trim()) continue;
+      stmts.push(
+        db.prepare(
+          `INSERT INTO objects(key, filename, content_type, size, uploaded_at, thumb_key, document_id, page_number)
+           VALUES(?,?,?,?,?,?,?,?)
+           ON CONFLICT(key) DO UPDATE SET
+             filename=excluded.filename, content_type=excluded.content_type,
+             size=excluded.size, uploaded_at=excluded.uploaded_at, thumb_key=excluded.thumb_key,
+             document_id=excluded.document_id, page_number=excluded.page_number`,
+        ).bind(
+          p.key, p.filename.trim(), p.content_type || null,
+          p.size || null, uploadedAt, p.thumb_key || null,
+          id, p.page_number || null,
+        ),
+      );
+    }
+
+    await db.batch(stmts);
+    return c.json({ success: true, document_id: id });
+  } catch (err) {
+    return c.json({ error: err?.message || String(err) }, 500);
+  }
+});
+
+// ── GET /api/documents ──
+app.get("/api/documents", async (c) => {
+  const tag = normalizeTag(c.req.query("tag") || "");
+  const db = c.env.DB;
+  if (!db) return c.json({ error: "DB not configured" }, 500);
+
+  try {
+    await ensureSchema(db);
+
+    const parts = [
+      "SELECT d.id, d.title, d.page_count, d.uploaded_at, d.thumb_key,",
+      "  COALESCE(GROUP_CONCAT(dt.tag), '') AS tags",
+      "FROM documents d",
+      "LEFT JOIN document_tags dt ON dt.document_id = d.id",
+      "WHERE 1=1",
+    ];
+    const bindings = [];
+
+    if (tag) {
+      parts.push(
+        "AND EXISTS (SELECT 1 FROM document_tags dt2 WHERE dt2.document_id = d.id AND dt2.tag = ?)",
+      );
+      bindings.push(tag);
+    }
+
+    parts.push("GROUP BY d.id", "ORDER BY d.uploaded_at DESC", "LIMIT 200");
+
+    const rows = await db
+      .prepare(parts.join("\n"))
+      .bind(...bindings)
+      .all();
+
+    const documents = (rows.results || []).map((r) => ({
+      id: r.id,
+      title: r.title,
+      page_count: r.page_count,
+      uploaded_at: r.uploaded_at,
+      thumb_key: r.thumb_key || null,
+      tags: parseCsvTags(r.tags || ""),
+    }));
+
+    return c.json({ documents });
+  } catch (err) {
+    return c.json({ error: err?.message || String(err) }, 500);
+  }
+});
+
+// ── GET /api/documents/:id/pages ──
+app.get("/api/documents/:id{[^/]+}/pages", async (c) => {
+  const docId = c.req.param("id");
+  const db = c.env.DB;
+  if (!db) return c.json({ error: "DB not configured" }, 500);
+
+  try {
+    await ensureSchema(db);
+    const rows = await db
+      .prepare(
+        "SELECT key, filename, content_type, size, uploaded_at, thumb_key, page_number FROM objects WHERE document_id=? ORDER BY page_number",
+      ).bind(docId)
+      .all();
+
+    const pages = (rows.results || []).map((r) => ({
+      key: r.key,
+      filename: r.filename,
+      content_type: r.content_type,
+      size: r.size,
+      uploaded_at: r.uploaded_at,
+      thumb_key: r.thumb_key || null,
+      page_number: r.page_number || 1,
+    }));
+
+    return c.json({ pages });
+  } catch (err) {
+    return c.json({ error: err?.message || String(err) }, 500);
+  }
+});
+
+// ── DELETE /api/documents/:id ──
+app.delete("/api/documents/:id{[^/]+}", async (c) => {
+  const docId = c.req.param("id");
+  if (!docId) return c.json({ error: "id required" }, 400);
+
+  try {
+    const db = c.env.DB;
+    if (!db) return c.json({ error: "DB not configured" }, 500);
+    await ensureSchema(db);
+
+    const docRow = await db
+      .prepare("SELECT thumb_key FROM documents WHERE id=?")
+      .bind(docId)
+      .first();
+
+    const pageRows = await db
+      .prepare("SELECT key, thumb_key FROM objects WHERE document_id=?")
+      .bind(docId)
+      .all();
+
+    for (const r of (pageRows.results || [])) {
+      try { await c.env.MY_BUCKET.delete(r.key); } catch {}
+      if (r.thumb_key) {
+        try { await c.env.MY_BUCKET.delete(r.thumb_key); } catch {}
+      }
+    }
+    if (docRow?.thumb_key) {
+      try { await c.env.MY_BUCKET.delete(docRow.thumb_key); } catch {}
+    }
+
+    await db.batch([
+      db.prepare("DELETE FROM objects WHERE document_id=?").bind(docId),
+      db.prepare("DELETE FROM document_tags WHERE document_id=?").bind(docId),
+      db.prepare("DELETE FROM documents WHERE id=?").bind(docId),
+    ]);
+
+    return c.json({ success: true });
+  } catch (err) {
+    return c.json({ error: err?.message || String(err) }, 500);
+  }
+});
+
+// ── PUT /api/documents/:id/tags ──
+app.put("/api/documents/:id{[^/]+}/tags", async (c) => {
+  const db = c.env.DB;
+  if (!db) return c.json({ error: "DB not configured" }, 500);
+
+  const docId = c.req.param("id");
+  const body = await c.req.json().catch(() => null);
+  if (!body) return c.json({ error: "Invalid JSON" }, 400);
+
+  const tags = normalizeTags(body.tags);
+  if (!docId) return c.json({ error: "id required" }, 400);
+
+  try {
+    await ensureSchema(db);
+    const exists = await db
+      .prepare("SELECT 1 AS ok FROM documents WHERE id=? LIMIT 1")
+      .bind(docId)
+      .first();
+    if (!exists) return c.json({ error: "Not found" }, 404);
+
+    const stmts = [
+      db.prepare("DELETE FROM document_tags WHERE document_id=?").bind(docId),
+    ];
+    for (const tag of tags) {
+      stmts.push(
+        db.prepare(
+          "INSERT OR IGNORE INTO document_tags(document_id, tag) VALUES(?,?)",
+        ).bind(docId, tag),
+      );
+    }
+    await db.batch(stmts);
+    return c.json({ success: true, tags });
+  } catch (err) {
+    return c.json({ error: err?.message || String(err) }, 500);
+  }
+});
+
 // ── GET /api/tags/top ──
 app.get("/api/tags/top", async (c) => {
   const db = c.env.DB;
@@ -279,7 +538,7 @@ app.get("/api/tags/top", async (c) => {
     await ensureSchema(db);
     const rows = await db
       .prepare(
-        "SELECT tag, COUNT(*) AS count FROM object_tags GROUP BY tag ORDER BY count DESC, tag ASC LIMIT ?",
+        "SELECT tag, COUNT(*) AS count FROM document_tags GROUP BY tag ORDER BY count DESC, tag ASC LIMIT ?",
       )
       .bind(limit)
       .all();
@@ -300,7 +559,7 @@ app.get("/api/tags/all", async (c) => {
     await ensureSchema(db);
     const rows = await db
       .prepare(
-        "SELECT tag, COUNT(*) AS count FROM object_tags GROUP BY tag ORDER BY count DESC, tag ASC LIMIT ?",
+        "SELECT tag, COUNT(*) AS count FROM document_tags GROUP BY tag ORDER BY count DESC, tag ASC LIMIT ?",
       )
       .bind(limit)
       .all();
@@ -325,8 +584,8 @@ app.get("/api/tags/related", async (c) => {
     const rows = await db
       .prepare(
         `SELECT t.tag, COUNT(*) AS count
-         FROM object_tags t
-         JOIN object_tags b ON b.key = t.key
+         FROM document_tags t
+         JOIN document_tags b ON b.document_id = t.document_id
          WHERE b.tag = ? AND t.tag <> ?
          GROUP BY t.tag ORDER BY count DESC, t.tag ASC LIMIT ?`,
       )
