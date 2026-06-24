@@ -7,13 +7,24 @@ const app = new Hono();
 const normalizeOrigin = (v) =>
   typeof v === "string" ? v.replace(/\/+$/, "") : "";
 
+const isAllowedOrigin = (origin, env) => {
+  if (!origin) return false;
+  const allowed = env.ALLOWED_ORIGINS;
+  if (!allowed) return false;
+  return allowed
+    .split(",")
+    .map((s) => normalizeOrigin(s.trim()))
+    .includes(origin);
+};
+
 const applyCors = (c) => {
   const origin = normalizeOrigin(c.req.header("Origin"));
-  if (!origin) return;
+  if (!isAllowedOrigin(origin, c.env)) return;
   c.header("Access-Control-Allow-Origin", origin);
   c.header("Vary", "Origin");
   c.header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
   c.header("Access-Control-Allow-Headers", "Content-Type,Authorization");
+  c.header("Access-Control-Allow-Credentials", "true");
   c.header("Access-Control-Max-Age", "86400");
 };
 
@@ -29,22 +40,75 @@ app.use("/*", async (c, next) => {
   applyCors(c);
 });
 
-// ── Auth middleware (API_KEY) ──
-const authMiddleware = async (c, next) => {
-  if (c.req.method === "OPTIONS") return next();
-  const header = (c.req.header("Authorization") || "").trim();
-  const token = header.startsWith("Bearer ")
-    ? header.slice(7).trim()
-    : header;
-  const queryToken = c.req.query("token") || "";
-  const finalToken = token || queryToken;
-  if (!finalToken || finalToken !== c.env.API_KEY) {
+// ── Auth helpers ──
+const constantTimeEqual = (a, b) => {
+  if (typeof a !== "string" || typeof b !== "string") return false;
+  if (a.length !== b.length) return false;
+  let result = 0;
+  for (let i = 0; i < a.length; i++) {
+    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return result === 0;
+};
+
+const getCookie = (headerValue, name) => {
+  if (!headerValue) return null;
+  for (const part of headerValue.split(";")) {
+    const [k, ...v] = part.trim().split("=");
+    if (k === name) return v.length ? decodeURIComponent(v.join("=")) : null;
+  }
+  return null;
+};
+
+// ── Auth endpoints (public, before middleware) ──
+app.post("/api/login", async (c) => {
+  const body = await c.req.json().catch(() => null);
+  if (!body) return c.json({ error: "Invalid JSON" }, 400);
+  const key = typeof body.apiKey === "string" ? body.apiKey.trim() : "";
+  if (!key) return c.json({ error: "apiKey required" }, 400);
+  if (!constantTimeEqual(key, c.env.API_KEY)) {
     return c.json({ error: "Unauthorized" }, 401);
   }
-  await next();
+  c.header(
+    "Set-Cookie",
+    `auth=${encodeURIComponent(key)}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=2592000`,
+  );
+  return c.json({ success: true });
+});
+
+app.post("/api/logout", (c) => {
+  c.header(
+    "Set-Cookie",
+    "auth=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0",
+  );
+  return c.json({ success: true });
+});
+
+// ── Auth middleware ──
+const authMiddleware = async (c, next) => {
+  if (c.req.method === "OPTIONS") return next();
+
+  const cookieToken = getCookie(c.req.header("Cookie"), "auth");
+  if (cookieToken && constantTimeEqual(cookieToken, c.env.API_KEY)) {
+    await next();
+    return;
+  }
+
+  const header = (c.req.header("Authorization") || "").trim();
+  const bearerToken = header.startsWith("Bearer ")
+    ? header.slice(7).trim()
+    : "";
+  if (bearerToken && constantTimeEqual(bearerToken, c.env.API_KEY)) {
+    await next();
+    return;
+  }
+
+  return c.json({ error: "Unauthorized" }, 401);
 };
 
 app.use("/api/*", authMiddleware);
+
+app.get("/api/auth/check", (c) => c.json({ authenticated: true }));
 
 // ── Helpers ──
 const getAwsClient = (env) =>
@@ -54,6 +118,11 @@ const getAwsClient = (env) =>
     service: "s3",
     region: "auto",
   });
+
+const sanitizeFilename = (name) => {
+  if (typeof name !== "string") return "";
+  return name.replace(/\0/g, "").replace(/\.\./g, "_").replace(/[/\\]/g, "_").trim();
+};
 
 const normalizeTag = (t) =>
   typeof t === "string" ? t.trim().toLowerCase() : "";
@@ -146,6 +215,13 @@ const ensureSchema = async (db) => {
   await db.prepare(
     "CREATE INDEX IF NOT EXISTS idx_document_tags_doc ON document_tags(document_id)",
   ).run();
+  await db.prepare(
+    `CREATE TABLE IF NOT EXISTS usage_cache (
+      date TEXT PRIMARY KEY,
+      data TEXT NOT NULL,
+      fetched_at INTEGER NOT NULL
+    )`,
+  ).run();
   schemaReady = true;
 };
 
@@ -199,7 +275,7 @@ app.get("/api/objects", async (c) => {
 
 // ── POST /api/objects/upload ──
 app.post("/api/objects/upload", async (c) => {
-  const filename = c.req.query("filename");
+  const filename = sanitizeFilename(c.req.query("filename"));
   const contentType = c.req.query("content_type") || "application/octet-stream";
   if (!filename) return c.json({ error: "filename required" }, 400);
 
@@ -785,6 +861,86 @@ app.delete("/api/objects/:key{.*}", async (c) => {
       ]);
     }
     return c.json({ success: true });
+  } catch (err) {
+    return c.json({ error: err?.message || String(err) }, 500);
+  }
+});
+
+// ── GET /api/usage ──
+const WORKERS_FREE_LIMIT = 100000;
+
+const fetchWorkersUsage = async (env) => {
+  const accountId = env.R2_ACCOUNT_ID;
+  const token = env.CF_API_TOKEN;
+  if (!accountId || !token) return null;
+
+  const today = new Date().toISOString().slice(0, 10);
+
+  const resp = await fetch("https://api.cloudflare.com/client/v4/graphql", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      query: `query {
+        viewer {
+          accounts(filter: { accountTag: "${accountId}" }) {
+            workersInvocationsAdaptive(
+              filter: { date_geq: "${today}", date_leq: "${today}" }
+              limit: 100
+            ) {
+              sum { requests }
+            }
+          }
+        }
+      }`,
+    }),
+  });
+
+  if (!resp.ok) return null;
+  const data = await resp.json();
+  const accounts = data?.data?.viewer?.accounts;
+  if (!accounts || !accounts.length) return null;
+
+  let total = 0;
+  for (const acc of accounts) {
+    const groups = acc.workersInvocationsAdaptive || [];
+    for (const g of groups) {
+      total += g?.sum?.requests || 0;
+    }
+  }
+
+  return { used: total, limit: WORKERS_FREE_LIMIT, remaining: WORKERS_FREE_LIMIT - total, date: today };
+};
+
+app.get("/api/usage", async (c) => {
+  const db = c.env.DB;
+  if (!db) return c.json({ error: "DB not configured" }, 500);
+
+  try {
+    await ensureSchema(db);
+
+    const today = new Date().toISOString().slice(0, 10);
+    const cached = await db
+      .prepare("SELECT data FROM usage_cache WHERE date=?")
+      .bind(today)
+      .first();
+
+    if (cached) {
+      return c.json(JSON.parse(cached.data));
+    }
+
+    const usage = await fetchWorkersUsage(c.env);
+    if (!usage) {
+      return c.json({ used: 0, limit: WORKERS_FREE_LIMIT, remaining: WORKERS_FREE_LIMIT, date: today, unavailable: true });
+    }
+
+    await db.prepare(
+      "INSERT OR REPLACE INTO usage_cache(date, data, fetched_at) VALUES(?,?,?)",
+    ).bind(today, JSON.stringify(usage), Date.now()).run();
+
+    return c.json(usage);
   } catch (err) {
     return c.json({ error: err?.message || String(err) }, 500);
   }

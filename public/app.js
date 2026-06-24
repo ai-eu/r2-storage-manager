@@ -2,12 +2,6 @@ const { createApp, ref, computed, onMounted, nextTick } = Vue;
 
 const API_BASE = "";
 
-const getAuthHeader = () => {
-  const k = localStorage.getItem("api_key");
-  return k ? "Bearer " + k : null;
-};
-const checkAuth = () => !!localStorage.getItem("api_key");
-
 const normalizeTag = (t) => (typeof t === "string" ? t.trim().toLowerCase() : "");
 const normalizeTags = (tags) => {
   if (!Array.isArray(tags)) return [];
@@ -122,8 +116,6 @@ const generatePdfThumbBlob = async (file) => {
 
 createApp({
   setup() {
-    if (!checkAuth()) { window.location.href = "/"; return {}; }
-
     const documents = ref([]);
     const loading = ref(false);
     const uploading = ref(false);
@@ -135,6 +127,21 @@ createApp({
     const relatedTags = ref([]);
     const allTags = ref([]);
     const menuKey = ref(null);
+    const usage = ref(null);
+    const usagePct = computed(() => {
+      if (!usage.value || !usage.value.limit) return 0;
+      return Math.min(100, Math.round((usage.value.used / usage.value.limit) * 100));
+    });
+    const formatNum = (n) => {
+      if (typeof n !== "number") return "0";
+      return n.toLocaleString("en-US");
+    };
+    const fetchUsage = async () => {
+      try {
+        const d = await apiFetch("/api/usage").then((r) => r.json());
+        usage.value = d;
+      } catch { usage.value = null; }
+    };
 
     // Pages view (multi-page document)
     const pagesViewOpen = ref(false);
@@ -284,13 +291,14 @@ createApp({
     };
 
     // Auth
-    const logout = () => { localStorage.removeItem("api_key"); window.location.href = "/"; };
+    const logout = () => {
+      fetch("/api/logout", { method: "POST" }).finally(() => { window.location.href = "/"; });
+    };
 
     // API helper
     const apiFetch = (url, opts) => {
-      const h = { ...(opts?.headers || {}), Authorization: getAuthHeader() };
-      return fetch(API_BASE + url, { ...opts, headers: h }).then((r) => {
-        if (r.status === 401) { logout(); throw new Error("Unauthorized"); }
+      return fetch(API_BASE + url, opts).then((r) => {
+        if (r.status === 401) { window.location.href = "/"; throw new Error("Unauthorized"); }
         return r;
       });
     };
@@ -322,7 +330,7 @@ createApp({
         const withThumbs = docs.map((d) => ({
           ...d,
           thumb_url: d.thumb_key
-            ? "/api/objects/thumb-download-url?thumb_key=" + encodeURIComponent(d.thumb_key) + "&token=" + encodeURIComponent(localStorage.getItem("api_key") || "")
+            ? "/api/objects/thumb-download-url?thumb_key=" + encodeURIComponent(d.thumb_key)
             : null,
         }));
         documents.value = withThumbs;
@@ -555,7 +563,7 @@ createApp({
         pagesViewList.value = (resp.pages || []).map((p) => ({
           ...p,
           thumb_url: p.thumb_key
-            ? "/api/objects/thumb-download-url?thumb_key=" + encodeURIComponent(p.thumb_key) + "&token=" + encodeURIComponent(localStorage.getItem("api_key") || "")
+            ? "/api/objects/thumb-download-url?thumb_key=" + encodeURIComponent(p.thumb_key)
             : null,
         }));
       } catch (e) { console.error(e); }
@@ -587,7 +595,7 @@ createApp({
           const page = (resp.pages || [])[0];
           if (!page) return;
           const name = page.filename || page.key || "";
-          const url = "/api/objects/download-url?key=" + encodeURIComponent(page.key) + "&token=" + encodeURIComponent(localStorage.getItem("api_key") || "");
+          const url = "/api/objects/download-url?key=" + encodeURIComponent(page.key);
           if (isImage(name)) { openViewer(url, name); }
           else { window.open(url, "_blank"); }
         } else {
@@ -595,7 +603,7 @@ createApp({
           pagesViewList.value = (resp.pages || []).map((p) => ({
             ...p,
             thumb_url: p.thumb_key
-              ? "/api/objects/thumb-download-url?thumb_key=" + encodeURIComponent(p.thumb_key) + "&token=" + encodeURIComponent(localStorage.getItem("api_key") || "")
+              ? "/api/objects/thumb-download-url?thumb_key=" + encodeURIComponent(p.thumb_key)
               : null,
           }));
           pagesViewTitle.value = doc.title || "Document";
@@ -616,9 +624,8 @@ createApp({
       const page = pagesViewList.value[pageIndex];
       if (!page) return;
       const name = page.filename || page.key || "";
-      const token = encodeURIComponent(localStorage.getItem("api_key") || "");
       const urls = pagesViewList.value.map((p) =>
-        "/api/objects/download-url?key=" + encodeURIComponent(p.key) + "&token=" + token
+        "/api/objects/download-url?key=" + encodeURIComponent(p.key)
       );
       if (isImage(name)) {
         openViewer(urls[pageIndex], name, urls, pageIndex);
@@ -643,7 +650,7 @@ createApp({
 
     const downloadPage = async (page) => {
       try {
-        const url = "/api/objects/download-url?key=" + encodeURIComponent(page.key) + "&token=" + encodeURIComponent(localStorage.getItem("api_key") || "");
+        const url = "/api/objects/download-url?key=" + encodeURIComponent(page.key);
         const a = document.createElement("a");
         a.href = url; a.download = page.filename || page.key.split("/").pop() || "download";
         a.target = "_blank"; document.body.appendChild(a); a.click(); document.body.removeChild(a);
@@ -659,10 +666,15 @@ createApp({
       } catch (e) { console.error(e); }
     };
 
-    onMounted(() => {
+    onMounted(async () => {
+      try {
+        const r = await fetch("/api/auth/check");
+        if (!r.ok) { window.location.href = "/"; return; }
+      } catch { window.location.href = "/"; return; }
       fetchDocuments();
       fetchTopTags();
       fetchAllTags();
+      fetchUsage();
       window.addEventListener("keydown", onViewerKeydown);
     });
 
@@ -680,6 +692,7 @@ createApp({
       getExt, getExtIcon, closeTagsModal, editTags, downloadPage, logout,
       isDragOver, onDragOver, onDragEnter, onDragLeave, onDrop,
       triggerAddPages, handleAddPagesInput,
+      usage, usagePct, formatNum,
     };
   },
 }).mount("#app");

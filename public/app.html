@@ -32,7 +32,21 @@
         Filter: {{ activeTag }}
       </div>
 
-      <div><button @click="logout" class="btn-secondary" style="margin-top:auto;">Log out</button></div>
+      <div class="sidebar-bottom">
+        <div v-if="usage" class="usage-widget">
+          <div class="usage-title">Workers requests</div>
+          <div class="usage-bar">
+            <div class="usage-bar-fill" :style="{width: usagePct + '%'}"></div>
+          </div>
+          <div class="usage-text">
+            {{ formatNum(usage.used) }} / {{ formatNum(usage.limit) }}
+          </div>
+          <div class="usage-remaining" :class="{'usage-warn': usagePct > 80}">
+            {{ formatNum(usage.remaining) }} left today
+          </div>
+        </div>
+        <button @click="logout" class="btn-secondary">Log out</button>
+      </div>
     </aside>
 
     <main class="app-main" :class="{'drag-over':isDragOver}"

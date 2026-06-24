@@ -35,11 +35,14 @@
       var key = input.value.trim();
       if (!key) { showStatus("Enter your API key", "error"); return; }
       showStatus("Checking...", "info");
-      fetch("/api/tags/top?limit=1", { headers: { Authorization: "Bearer " + key } })
+      fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: key })
+      })
         .then(function(r) {
           if (r.status === 401) { showStatus("Invalid API key", "error"); return; }
           if (!r.ok) { showStatus("Server error", "error"); return; }
-          localStorage.setItem("api_key", key);
           window.location.href = "/app.html";
         })
         .catch(function() { showStatus("Connection error", "error"); });
@@ -47,7 +50,7 @@
 
     btn.addEventListener("click", tryLogin);
     input.addEventListener("keyup", function(e) { if (e.key === "Enter") tryLogin(); });
-    if (localStorage.getItem("api_key")) window.location.href = "/app.html";
+    fetch("/api/auth/check").then(function(r) { if (r.ok) window.location.href = "/app.html"; });
   </script>
 </body>
 </html>
