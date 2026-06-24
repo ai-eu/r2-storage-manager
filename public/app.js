@@ -376,22 +376,25 @@ createApp({
           uploadProgress.value = Math.round(((i + 1) / list.length) * 100);
         }
 
-        let thumbKey = null;
-        const firstFile = list[0];
-        try {
-          const thumb = isImage(firstFile.name) ? await generateImageThumbBlob(firstFile)
-            : isPdf(firstFile.name) ? await generatePdfThumbBlob(firstFile)
-            : null;
-          if (thumb?.blob && thumb?.ext) {
-            const firstKey = uploadedKeys[0];
-            const thumbResp = await apiFetch(
-              "/api/objects/thumb-upload?key=" + encodeURIComponent(firstKey) +
-              "&ext=" + encodeURIComponent(thumb.ext),
-              { method: "POST", headers: { "Content-Type": thumb.ext === "webp" ? "image/webp" : "image/jpeg" }, body: thumb.blob },
-            ).then((r) => r.json());
-            thumbKey = thumbResp.thumb_key;
-          }
-        } catch (e) { console.error("thumb generation failed:", e); }
+        const pageThumbKeys = [];
+        for (let i = 0; i < list.length; i++) {
+          const file = list[i];
+          let pageThumbKey = null;
+          try {
+            const thumb = isImage(file.name) ? await generateImageThumbBlob(file)
+              : isPdf(file.name) ? await generatePdfThumbBlob(file)
+              : null;
+            if (thumb?.blob && thumb?.ext) {
+              const thumbResp = await apiFetch(
+                "/api/objects/thumb-upload?key=" + encodeURIComponent(uploadedKeys[i]) +
+                "&ext=" + encodeURIComponent(thumb.ext),
+                { method: "POST", headers: { "Content-Type": thumb.ext === "webp" ? "image/webp" : "image/jpeg" }, body: thumb.blob },
+              ).then((r) => r.json());
+              pageThumbKey = thumbResp.thumb_key;
+            }
+          } catch (e) { console.error("thumb generation failed for page", i + 1, ":", e); }
+          pageThumbKeys.push(pageThumbKey);
+        }
 
         const docId = "doc_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
         const pages = list.map((file, i) => ({
@@ -400,6 +403,7 @@ createApp({
           content_type: file.type,
           size: file.size,
           page_number: i + 1,
+          thumb_key: pageThumbKeys[i],
         }));
 
         await apiFetch("/api/documents/register", {
@@ -407,10 +411,10 @@ createApp({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             id: docId,
-            title: firstFile.name,
+            title: list[0].name,
             pages,
             tags,
-            thumb_key: thumbKey,
+            thumb_key: pageThumbKeys[0],
           }),
         });
 
@@ -431,6 +435,91 @@ createApp({
       const input = event?.target;
       if (!input?.files?.length) return;
       try { await uploadFiles(input.files); } finally { try { input.value = ""; } catch {} }
+    };
+
+    let addPagesTargetDocId = null;
+    const triggerAddPages = (docId) => {
+      addPagesTargetDocId = docId;
+      const input = document.querySelector('input[data-role="add-pages"]');
+      if (input) { input.value = ""; input.click(); }
+    };
+    const handleAddPagesInput = async (event) => {
+      const input = event?.target;
+      if (!input?.files?.length || !addPagesTargetDocId) return;
+      const docId = addPagesTargetDocId;
+      addPagesTargetDocId = null;
+      try { await addFilesToDocument(docId, input.files); } finally { try { input.value = ""; } catch {} }
+    };
+
+    const addFilesToDocument = async (docId, filesToUpload) => {
+      const list = Array.from(filesToUpload || []).filter((f) => f instanceof File);
+      if (!list.length) return;
+
+      list.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+
+      uploading.value = true;
+      uploadProgress.value = 0;
+      uploadError.value = "";
+
+      const uploadedKeys = [];
+      try {
+        for (let i = 0; i < list.length; i++) {
+          const file = list[i];
+          const uploadResp = await apiFetch(
+            "/api/objects/upload?filename=" + encodeURIComponent(file.name) +
+            "&content_type=" + encodeURIComponent(file.type || "application/octet-stream"),
+            { method: "POST", body: file },
+          ).then((r) => r.json());
+          uploadedKeys.push(uploadResp.key);
+          uploadProgress.value = Math.round(((i + 1) / list.length) * 100);
+        }
+
+        const pageThumbKeys = [];
+        for (let i = 0; i < list.length; i++) {
+          const file = list[i];
+          let pageThumbKey = null;
+          try {
+            const thumb = isImage(file.name) ? await generateImageThumbBlob(file)
+              : isPdf(file.name) ? await generatePdfThumbBlob(file)
+              : null;
+            if (thumb?.blob && thumb?.ext) {
+              const thumbResp = await apiFetch(
+                "/api/objects/thumb-upload?key=" + encodeURIComponent(uploadedKeys[i]) +
+                "&ext=" + encodeURIComponent(thumb.ext),
+                { method: "POST", headers: { "Content-Type": thumb.ext === "webp" ? "image/webp" : "image/jpeg" }, body: thumb.blob },
+              ).then((r) => r.json());
+              pageThumbKey = thumbResp.thumb_key;
+            }
+          } catch (e) { console.error("thumb generation failed for page", i + 1, ":", e); }
+          pageThumbKeys.push(pageThumbKey);
+        }
+
+        const pages = list.map((file, i) => ({
+          key: uploadedKeys[i],
+          filename: file.name,
+          content_type: file.type,
+          size: file.size,
+          thumb_key: pageThumbKeys[i],
+        }));
+
+        await apiFetch("/api/documents/" + encodeURIComponent(docId) + "/pages", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pages }),
+        });
+
+        await refreshAll();
+        await refreshPagesView();
+      } catch (e) {
+        console.error("add pages failed:", e);
+        uploadError.value = e?.message || "Failed to add pages. Cleaning up.";
+        for (const key of uploadedKeys) {
+          try { await apiFetch("/api/objects/" + encodeURIComponent(key), { method: "DELETE" }); } catch {}
+        }
+      } finally {
+        uploading.value = false;
+        uploadProgress.value = 0;
+      }
     };
 
     const isDragOver = ref(false);
@@ -457,6 +546,37 @@ createApp({
       if (droppedFiles?.length) {
         await uploadFiles(droppedFiles);
       }
+    };
+
+    const refreshPagesView = async () => {
+      if (!pagesViewOpen.value || !pagesViewDocId.value) return;
+      try {
+        const resp = await apiFetch("/api/documents/" + encodeURIComponent(pagesViewDocId.value) + "/pages").then((r) => r.json());
+        pagesViewList.value = (resp.pages || []).map((p) => ({
+          ...p,
+          thumb_url: p.thumb_key
+            ? "/api/objects/thumb-download-url?thumb_key=" + encodeURIComponent(p.thumb_key) + "&token=" + encodeURIComponent(localStorage.getItem("api_key") || "")
+            : null,
+        }));
+      } catch (e) { console.error(e); }
+    };
+
+    const deletePage = async (page) => {
+      if (!page?.key || !pagesViewDocId.value) return;
+      if (!confirm("Delete this page?")) return;
+      try {
+        const resp = await apiFetch(
+          "/api/documents/" + encodeURIComponent(pagesViewDocId.value) + "/pages?key=" + encodeURIComponent(page.key),
+          { method: "DELETE" },
+        ).then((r) => r.json());
+        if (resp.document_deleted) {
+          closePagesView();
+          await refreshAll();
+          return;
+        }
+        await refreshPagesView();
+        await refreshAll();
+      } catch (e) { console.error(e); }
     };
 
     // Document actions
@@ -554,11 +674,12 @@ createApp({
       viewerPages, viewerPageIndex,
       onViewerImgLoad, onViewerPointerDown, onViewerPointerMove, onViewerPointerUp,
       viewerPrev, viewerNext, closeViewer,
-      pagesViewOpen, pagesViewTitle, pagesViewList, closePagesView, openViewerFromPages,
+      pagesViewOpen, pagesViewTitle, pagesViewList, pagesViewDocId, closePagesView, openViewerFromPages, deletePage,
       menuKey, tagToColors, refreshAll, setActiveTag, clearActiveTag,
       handleFileUpload, deleteDocument, isImage, isPdf, viewDocument,
       getExt, getExtIcon, closeTagsModal, editTags, downloadPage, logout,
       isDragOver, onDragOver, onDragEnter, onDragLeave, onDrop,
+      triggerAddPages, handleAddPagesInput,
     };
   },
 }).mount("#app");

@@ -448,6 +448,61 @@ app.get("/api/documents/:id{[^/]+}/pages", async (c) => {
   }
 });
 
+// ── POST /api/documents/:id/pages ──
+app.post("/api/documents/:id{[^/]+}/pages", async (c) => {
+  const db = c.env.DB;
+  if (!db) return c.json({ error: "DB not configured" }, 500);
+
+  const docId = c.req.param("id");
+  const body = await c.req.json().catch(() => null);
+  if (!body) return c.json({ error: "Invalid JSON" }, 400);
+
+  const pages = Array.isArray(body.pages) ? body.pages : [];
+  if (pages.length === 0) return c.json({ error: "pages array required" }, 400);
+
+  try {
+    await ensureSchema(db);
+
+    const doc = await db
+      .prepare("SELECT id, page_count FROM documents WHERE id=?")
+      .bind(docId)
+      .first();
+    if (!doc) return c.json({ error: "Document not found" }, 404);
+
+    const startPage = (doc.page_count || 0) + 1;
+    const stmts = [];
+
+    for (let i = 0; i < pages.length; i++) {
+      const p = pages[i];
+      if (!p.key || typeof p.filename !== "string" || !p.filename.trim()) continue;
+      stmts.push(
+        db.prepare(
+          `INSERT INTO objects(key, filename, content_type, size, uploaded_at, thumb_key, document_id, page_number)
+           VALUES(?,?,?,?,?,?,?,?)
+           ON CONFLICT(key) DO UPDATE SET
+             filename=excluded.filename, content_type=excluded.content_type,
+             size=excluded.size, uploaded_at=excluded.uploaded_at, thumb_key=excluded.thumb_key,
+             document_id=excluded.document_id, page_number=excluded.page_number`,
+        ).bind(
+          p.key, p.filename.trim(), p.content_type || null,
+          p.size || null, Date.now(), p.thumb_key || null,
+          docId, startPage + i,
+        ),
+      );
+    }
+
+    const newPageCount = startPage + pages.length - 1;
+    stmts.push(
+      db.prepare("UPDATE documents SET page_count=? WHERE id=?").bind(newPageCount, docId),
+    );
+
+    await db.batch(stmts);
+    return c.json({ success: true, document_id: docId, page_count: newPageCount });
+  } catch (err) {
+    return c.json({ error: err?.message || String(err) }, 500);
+  }
+});
+
 // ── DELETE /api/documents/:id ──
 app.delete("/api/documents/:id{[^/]+}", async (c) => {
   const docId = c.req.param("id");
@@ -485,6 +540,78 @@ app.delete("/api/documents/:id{[^/]+}", async (c) => {
     ]);
 
     return c.json({ success: true });
+  } catch (err) {
+    return c.json({ error: err?.message || String(err) }, 500);
+  }
+});
+
+// ── DELETE /api/documents/:id/pages ──
+app.delete("/api/documents/:id{[^/]+}/pages", async (c) => {
+  const db = c.env.DB;
+  if (!db) return c.json({ error: "DB not configured" }, 500);
+
+  const docId = c.req.param("id");
+  const pageKey = c.req.query("key");
+  if (!pageKey) return c.json({ error: "key required" }, 400);
+
+  try {
+    await ensureSchema(db);
+
+    const pageRow = await db
+      .prepare("SELECT key, thumb_key, page_number FROM objects WHERE key=? AND document_id=?")
+      .bind(pageKey, docId)
+      .first();
+    if (!pageRow) return c.json({ error: "Page not found" }, 404);
+
+    try { await c.env.MY_BUCKET.delete(pageRow.key); } catch {}
+    if (pageRow.thumb_key) {
+      try { await c.env.MY_BUCKET.delete(pageRow.thumb_key); } catch {}
+    }
+
+    await db.batch([
+      db.prepare("DELETE FROM object_tags WHERE key=?").bind(pageKey),
+      db.prepare("DELETE FROM objects WHERE key=?").bind(pageKey),
+    ]);
+
+    const remaining = await db
+      .prepare("SELECT key, thumb_key, page_number FROM objects WHERE document_id=? ORDER BY page_number")
+      .bind(docId)
+      .all();
+    const pages = remaining.results || [];
+
+    if (pages.length === 0) {
+      const docRow = await db.prepare("SELECT thumb_key FROM documents WHERE id=?").bind(docId).first();
+      if (docRow?.thumb_key && docRow.thumb_key !== pageRow.thumb_key) {
+        try { await c.env.MY_BUCKET.delete(docRow.thumb_key); } catch {}
+      }
+      await db.batch([
+        db.prepare("DELETE FROM document_tags WHERE document_id=?").bind(docId),
+        db.prepare("DELETE FROM documents WHERE id=?").bind(docId),
+      ]);
+      return c.json({ success: true, document_deleted: true });
+    }
+
+    const stmts = [];
+    for (let i = 0; i < pages.length; i++) {
+      stmts.push(
+        db.prepare("UPDATE objects SET page_number=? WHERE key=?").bind(i + 1, pages[i].key),
+      );
+    }
+
+    const docRow = await db.prepare("SELECT thumb_key FROM documents WHERE id=?").bind(docId).first();
+    if (docRow?.thumb_key === pageRow.thumb_key) {
+      const newThumb = pages[0].thumb_key || null;
+      stmts.push(
+        db.prepare("UPDATE documents SET page_count=?, thumb_key=? WHERE id=?").bind(pages.length, newThumb, docId),
+      );
+    } else {
+      stmts.push(
+        db.prepare("UPDATE documents SET page_count=? WHERE id=?").bind(pages.length, docId),
+      );
+    }
+
+    await db.batch(stmts);
+    return c.json({ success: true, page_count: pages.length });
   } catch (err) {
     return c.json({ error: err?.message || String(err) }, 500);
   }
