@@ -47,6 +47,147 @@ if (typeof pdfjsLib !== "undefined") {
   pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 }
 
+// ── Image processing ──
+
+const decodeImageFile = (file) => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onerror = () => reject(new Error("read error"));
+  reader.onload = () => {
+    const img = new Image();
+    img.onerror = () => reject(new Error("decode error"));
+    img.onload = () => resolve(img);
+    img.src = reader.result;
+  };
+  reader.readAsDataURL(file);
+});
+
+// Apply grayscale + auto-normalize + auto-brightness to ImageData in-place.
+// Returns { brightnessAuto, contrastAuto, sharpnessAuto } — computed values for sliders.
+const autoProcessImageData = (data) => {
+  const d = data.data;
+  const len = d.length;
+
+  // Step 1: grayscale (luminance)
+  for (let i = 0; i < len; i += 4) {
+    const g = Math.round(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]);
+    d[i] = d[i + 1] = d[i + 2] = g;
+  }
+
+  // Step 2: find min/max for normalize
+  let min = 255, max = 0, sum = 0, count = len / 4;
+  for (let i = 0; i < len; i += 4) {
+    const v = d[i];
+    if (v < min) min = v;
+    if (v > max) max = v;
+    sum += v;
+  }
+  const mean = sum / count;
+  const range = max - min || 1;
+
+  // Step 3: normalize (stretch histogram to 0–255)
+  for (let i = 0; i < len; i += 4) {
+    const v = Math.round(((d[i] - min) / range) * 255);
+    d[i] = d[i + 1] = d[i + 2] = v;
+  }
+
+  // Step 4: auto-brightness correction — only brighten, never darken documents.
+  // Target mean 170 (documents are mostly white/light — keep them bright).
+  const targetMean = 170;
+  let newSum = 0;
+  for (let i = 0; i < len; i += 4) newSum += d[i];
+  const newMean = newSum / count;
+  // Apply only if image is darker than target (don't dim already-bright scans)
+  const brightnessDelta = newMean < targetMean ? Math.round(targetMean - newMean) : 0;
+  if (brightnessDelta > 0) {
+    for (let i = 0; i < len; i += 4) {
+      const v = Math.max(0, Math.min(255, d[i] + brightnessDelta));
+      d[i] = d[i + 1] = d[i + 2] = v;
+    }
+  }
+
+  return {
+    brightnessAuto: brightnessDelta,
+    contrastAuto: 0,
+    sharpnessAuto: 30,
+  };
+};
+
+// Apply user slider deltas on top of already-processed ImageData (copy → apply → putImageData).
+// processedData is the auto-processed base; brightness/contrast/sharpness are user deltas.
+const applySliderDeltas = (ctx, baseImageData, width, height, brightness, contrast, sharpness) => {
+  const src = new Uint8ClampedArray(baseImageData.data);
+  const out = new ImageData(new Uint8ClampedArray(src), width, height);
+  const d = out.data;
+  const len = d.length;
+
+  // Brightness delta
+  if (brightness !== 0) {
+    for (let i = 0; i < len; i += 4) {
+      const v = Math.max(0, Math.min(255, d[i] + brightness));
+      d[i] = d[i + 1] = d[i + 2] = v;
+    }
+  }
+
+  // Contrast factor: factor = (259 * (contrast + 255)) / (255 * (259 - contrast))
+  if (contrast !== 0) {
+    const f = (259 * (contrast + 255)) / (255 * (259 - contrast));
+    for (let i = 0; i < len; i += 4) {
+      const v = Math.max(0, Math.min(255, Math.round(f * (d[i] - 128) + 128)));
+      d[i] = d[i + 1] = d[i + 2] = v;
+    }
+  }
+
+  // Unsharp mask (simple 3x3 blur → subtract)
+  if (sharpness > 0) {
+    const amount = sharpness / 100;
+    const blurred = new Uint8ClampedArray(len);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        let s = 0, c = 0;
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const nx = x + dx, ny = y + dy;
+            if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+              s += d[(ny * width + nx) * 4]; c++;
+            }
+          }
+        }
+        blurred[(y * width + x) * 4] = Math.round(s / c);
+      }
+    }
+    for (let i = 0; i < len; i += 4) {
+      const sharpened = Math.max(0, Math.min(255, Math.round(d[i] + amount * (d[i] - blurred[i]))));
+      d[i] = d[i + 1] = d[i + 2] = sharpened;
+    }
+  }
+
+  ctx.putImageData(out, 0, 0);
+  return out;
+};
+
+// Auto-pick JPEG quality to target ≤ 500KB (max 1MB).
+// Returns { blob, quality, oversized }.
+const autoPickQuality = (canvas) => new Promise((resolve) => {
+  const tryQ = (qualities, idx) => {
+    if (idx >= qualities.length) {
+      canvas.toBlob((b) => resolve({ blob: b, quality: qualities[qualities.length - 1], oversized: true }), "image/jpeg", qualities[qualities.length - 1]);
+      return;
+    }
+    const q = qualities[idx];
+    canvas.toBlob((b) => {
+      if (!b) { resolve({ blob: b, quality: q, oversized: false }); return; }
+      if (b.size <= 512 * 1024 || idx === qualities.length - 1) {
+        resolve({ blob: b, quality: q, oversized: b.size > 1024 * 1024 });
+      } else if (b.size > 1024 * 1024) {
+        tryQ(qualities, idx + 1);
+      } else {
+        tryQ(qualities, idx + 1);
+      }
+    }, "image/jpeg", q);
+  };
+  tryQ([0.85, 0.80, 0.72, 0.60], 0);
+});
+
 const generateImageThumbBlob = async (file) => {
   if (!(file instanceof File)) return null;
   const img = await new Promise((res, rej) => {
@@ -157,6 +298,163 @@ createApp({
       return (allTags.value.length ? allTags.value : topTags.value)
         .filter((t) => normalizeTag(t?.tag || "").includes(q)).slice(0, 50);
     });
+
+    // PDF processing modal
+    const pdfModalOpen = ref(false);
+    const pdfModalPages = ref([]); // [{ file, img, baseImageData, canvas, autoVals }]
+    const pdfModalPageIdx = ref(0);
+    const pdfModalBrightness = ref(0);
+    const pdfModalContrast = ref(0);
+    const pdfModalSharpness = ref(30);
+    const pdfModalSizeKb = ref(null);
+    const pdfModalProcessing = ref(false);
+    const pdfModalCanvas = ref(null); // template ref
+    const pdfModalPreview = ref(null); // template ref — scroll container
+    let pdfModalResolve = null;
+    let pdfModalAddDocId = null;
+
+    // Zoom state
+    const pdfZoom = ref(1);
+    const pdfZoomMin = 0.25;
+    const pdfZoomMax = 8;
+    const pdfZoomStep = 0.25;
+
+    const pdfZoomSet = (z) => {
+      pdfZoom.value = Math.max(pdfZoomMin, Math.min(pdfZoomMax, Math.round(z * 100) / 100));
+    };
+    const pdfZoomIn = () => pdfZoomSet(pdfZoom.value + pdfZoomStep);
+    const pdfZoomOut = () => pdfZoomSet(pdfZoom.value - pdfZoomStep);
+    const pdfZoomReset = () => pdfZoomSet(1);
+
+    // Pan (drag) state — only active when zoomed in
+    let pdfDragging = false;
+    let pdfDragStart = null;
+    let pdfScrollStart = null;
+
+    const onPdfDragStart = (e) => {
+      if (pdfZoom.value <= 1) return;
+      const container = pdfModalPreview.value;
+      if (!container) return;
+      pdfDragging = true;
+      pdfDragStart = { x: e.clientX, y: e.clientY };
+      pdfScrollStart = { left: container.scrollLeft, top: container.scrollTop };
+      e.preventDefault();
+    };
+    const onPdfDragMove = (e) => {
+      if (!pdfDragging || !pdfDragStart || !pdfScrollStart) return;
+      const container = pdfModalPreview.value;
+      if (!container) return;
+      container.scrollLeft = pdfScrollStart.left - (e.clientX - pdfDragStart.x);
+      container.scrollTop = pdfScrollStart.top - (e.clientY - pdfDragStart.y);
+    };
+    const onPdfDragEnd = () => {
+      pdfDragging = false;
+      pdfDragStart = null;
+      pdfScrollStart = null;
+    };
+
+    const pdfCanvasStyle = computed(() => ({
+      transform: `scale(${pdfZoom.value})`,
+      transformOrigin: "top center",
+      cursor: pdfDragging ? "grabbing" : (pdfZoom.value > 1 ? "grab" : "default"),
+      userSelect: "none",
+    }));
+
+    const onPdfPreviewWheel = (e) => {
+      const delta = e.deltaY > 0 ? -pdfZoomStep : pdfZoomStep;
+      pdfZoomSet(pdfZoom.value + delta);
+    };
+
+    const pdfModalCurrentPage = computed(() =>
+      pdfModalPages.value[pdfModalPageIdx.value] || null
+    );
+
+    // Draw current page with current slider values into canvas
+    const pdfModalRedraw = () => {
+      const page = pdfModalCurrentPage.value;
+      const canvas = pdfModalCanvas.value;
+      if (!page || !canvas) return;
+      const ctx = canvas.getContext("2d", { alpha: false });
+      if (!ctx) return;
+      applySliderDeltas(
+        ctx, page.baseImageData, canvas.width, canvas.height,
+        pdfModalBrightness.value, pdfModalContrast.value, pdfModalSharpness.value,
+      );
+    };
+
+    // Estimate PDF size (rough: sum of all pages at current quality)
+    const pdfModalEstimateSize = async () => {
+      const page = pdfModalCurrentPage.value;
+      const canvas = pdfModalCanvas.value;
+      if (!page || !canvas) return;
+      const { blob } = await autoPickQuality(canvas);
+      pdfModalSizeKb.value = blob ? Math.round(blob.size / 1024) : null;
+    };
+
+    // Load one image onto the offscreen canvas and run auto-processing
+    const pdfModalLoadPage = async (pageObj) => {
+      const canvas = pdfModalCanvas.value;
+      if (!canvas || !pageObj) return;
+      const img = pageObj.img;
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const ctx = canvas.getContext("2d", { alpha: false });
+      ctx.drawImage(img, 0, 0);
+      const rawData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const autoVals = autoProcessImageData(rawData);
+      ctx.putImageData(rawData, 0, 0);
+      pageObj.baseImageData = rawData;
+      pageObj.autoVals = autoVals;
+      pdfModalBrightness.value = autoVals.brightnessAuto;
+      pdfModalContrast.value = autoVals.contrastAuto;
+      pdfModalSharpness.value = autoVals.sharpnessAuto;
+      pdfZoomReset();
+      pdfModalRedraw();
+      pdfModalEstimateSize();
+    };
+
+    const pdfModalOnSlider = () => {
+      pdfModalRedraw();
+      pdfModalEstimateSize();
+    };
+
+    // Open modal: process files, return Promise<settings|null>
+    const openPdfModal = async (files, addDocId = null) => {
+      pdfModalProcessing.value = true;
+      pdfModalOpen.value = true;
+      pdfModalAddDocId = addDocId || null;
+      pdfModalPageIdx.value = 0;
+      pdfModalPages.value = [];
+      pdfModalSizeKb.value = null;
+
+      const pages = [];
+      for (const file of files) {
+        try {
+          const img = await decodeImageFile(file);
+          pages.push({ file, img, baseImageData: null, autoVals: null });
+        } catch (e) { console.error("decode failed", file.name, e); }
+      }
+      pdfModalPages.value = pages;
+      pdfModalProcessing.value = false;
+
+      // Wait for canvas to mount, then load first page
+      await new Promise((r) => setTimeout(r, 50));
+      await pdfModalLoadPage(pdfModalPages.value[0]);
+
+      return new Promise((r) => { pdfModalResolve = r; });
+    };
+
+    const pdfModalConfirm = () => {
+      const r = pdfModalResolve; pdfModalResolve = null;
+      pdfModalOpen.value = false;
+      if (r) r({ brightness: pdfModalBrightness.value, contrast: pdfModalContrast.value, sharpness: pdfModalSharpness.value });
+    };
+
+    const pdfModalCancel = () => {
+      const r = pdfModalResolve; pdfModalResolve = null;
+      pdfModalOpen.value = false;
+      if (r) r(null);
+    };
 
     // Tag modal
     const tagModalOpen = ref(false);
@@ -355,87 +653,267 @@ createApp({
       await Promise.all([fetchDocuments(), fetchTopTags(), fetchAllTags()]);
     };
 
-    // Upload
-    const uploadFiles = async (filesToUpload) => {
-      const list = Array.from(filesToUpload || []).filter((f) => f instanceof File);
-      if (!list.length) return;
+    // ── Upload / process ──
 
-      list.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+    // Render one page to a JPEG blob using already-auto-processed baseImageData + slider deltas.
+    // Returns { blob, width, height }.
+    const renderPageBlob = async (page, settings) => {
+      const { brightness, contrast, sharpness } = settings;
+      const w = page.img.naturalWidth, h = page.img.naturalHeight;
+      const offscreen = document.createElement("canvas");
+      offscreen.width = w;
+      offscreen.height = h;
+      const ctx = offscreen.getContext("2d", { alpha: false });
+      // baseImageData already has auto-processing applied (from modal); just apply slider deltas
+      applySliderDeltas(ctx, page.baseImageData, w, h, brightness, contrast, sharpness);
+      const { blob } = await autoPickQuality(offscreen);
+      return { blob, width: w, height: h };
+    };
 
-      const title = list.length === 1 ? "Enter tags for file" : "Enter tags for all files";
-      const result = await openTagsModal({ title, initialValue: "" });
-      if (result === null) return;
-      const tags = parseTagsInput(result);
+    // Generate PDF blob from already-processed pages.
+    const renderPdfBlob = async (pages, settings) => {
+      const jspdf = window.jspdf?.jsPDF;
+      if (!jspdf) throw new Error("jsPDF not loaded");
 
+      let pdf = null;
+      for (const page of pages) {
+        const { blob, width: w, height: h } = await renderPageBlob(page, settings);
+        if (!blob) continue;
+        const dataUrl = await new Promise((r) => {
+          const reader = new FileReader();
+          reader.onload = () => r(reader.result);
+          reader.readAsDataURL(blob);
+        });
+        if (!pdf) {
+          pdf = new jspdf({ orientation: w > h ? "l" : "p", unit: "px", format: [w, h], hotfixes: ["px_scaling"] });
+        } else {
+          pdf.addPage([w, h], w > h ? "l" : "p");
+        }
+        pdf.addImage(dataUrl, "JPEG", 0, 0, w, h);
+      }
+      if (!pdf) return null;
+      return pdf.output("blob");
+    };
+
+    // Core upload function: handles both new doc and add-pages flows.
+    // imageFiles: File[] of images already decoded (non-image files go through old path).
+    // settings: { brightness, contrast, sharpness } from modal.
+    // addDocId: existing doc id to add pages to, or null for new doc.
+    const processAndUploadPages = async (list, settings, addDocId, tags) => {
       uploading.value = true;
       uploadProgress.value = 0;
       uploadError.value = "";
 
       const uploadedKeys = [];
+      const originalKeys = [];
       try {
-        for (let i = 0; i < list.length; i++) {
-          const file = list[i];
-          const uploadResp = await apiFetch(
-            "/api/objects/upload?filename=" + encodeURIComponent(file.name) +
-            "&content_type=" + encodeURIComponent(file.type || "application/octet-stream"),
-            { method: "POST", body: file },
-          ).then((r) => r.json());
-          uploadedKeys.push(uploadResp.key);
-          uploadProgress.value = Math.round(((i + 1) / list.length) * 100);
-        }
+        const totalSteps = list.length * 3 + 1; // upload orig + upload processed + thumb + pdf
+        let step = 0;
+        const tick = () => { step++; uploadProgress.value = Math.round((step / totalSteps) * 100); };
 
         const pageThumbKeys = [];
+        const processedBlobs = [];
+
         for (let i = 0; i < list.length; i++) {
-          const file = list[i];
-          let pageThumbKey = null;
+          const { file, img } = list[i];
+
+          // Upload original (unprocessed) to originals/
+          const origKey = await apiFetch(
+            "/api/objects/upload?filename=" + encodeURIComponent("originals/" + file.name) +
+            "&content_type=" + encodeURIComponent(file.type || "image/jpeg"),
+            { method: "POST", body: file },
+          ).then((r) => r.json()).then((j) => j.key);
+          originalKeys.push(origKey);
+          tick();
+
+          // Render processed version using baseImageData already prepared by modal (no double auto-processing)
+          const { blob: procBlob } = await renderPageBlob(list[i], settings);
+          processedBlobs.push({ blob: procBlob, img });
+
+          // Upload processed image to files/
+          const procName = file.name.replace(/\.[^.]+$/, "") + ".jpg";
+          const procResp = await apiFetch(
+            "/api/objects/upload?filename=" + encodeURIComponent(procName) +
+            "&content_type=image/jpeg",
+            { method: "POST", body: procBlob },
+          ).then((r) => r.json());
+          uploadedKeys.push(procResp.key);
+          tick();
+
+          // Generate thumb from processed blob
+          let thumbKey = null;
           try {
-            const thumb = isImage(file.name) ? await generateImageThumbBlob(file)
-              : isPdf(file.name) ? await generatePdfThumbBlob(file)
-              : null;
-            if (thumb?.blob && thumb?.ext) {
+            const thumbResult = await generateImageThumbBlob(new File([procBlob], procName, { type: "image/jpeg" }));
+            if (thumbResult?.blob) {
               const thumbResp = await apiFetch(
-                "/api/objects/thumb-upload?key=" + encodeURIComponent(uploadedKeys[i]) +
-                "&ext=" + encodeURIComponent(thumb.ext),
-                { method: "POST", headers: { "Content-Type": thumb.ext === "webp" ? "image/webp" : "image/jpeg" }, body: thumb.blob },
+                "/api/objects/thumb-upload?key=" + encodeURIComponent(procResp.key) +
+                "&ext=" + encodeURIComponent(thumbResult.ext),
+                { method: "POST", headers: { "Content-Type": thumbResult.ext === "webp" ? "image/webp" : "image/jpeg" }, body: thumbResult.blob },
               ).then((r) => r.json());
-              pageThumbKey = thumbResp.thumb_key;
+              thumbKey = thumbResp.thumb_key;
             }
-          } catch (e) { console.error("thumb generation failed for page", i + 1, ":", e); }
-          pageThumbKeys.push(pageThumbKey);
+          } catch (e) { console.error("thumb failed", e); }
+          pageThumbKeys.push(thumbKey);
+          tick();
         }
 
-        const docId = "doc_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
-        const pages = list.map((file, i) => ({
+        // Generate and upload PDF
+        const pdfBlob = await renderPdfBlob(list, settings);
+        let pdfKey = null;
+        let pdfThumbKey = null;
+        if (pdfBlob) {
+          const docIdForPdf = addDocId || ("doc_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8));
+          const pdfResp = await apiFetch(
+            "/api/objects/upload?filename=" + encodeURIComponent(docIdForPdf + ".pdf") +
+            "&content_type=application/pdf",
+            { method: "POST", body: pdfBlob },
+          ).then((r) => r.json());
+          pdfKey = pdfResp.key;
+          // Generate thumb from PDF (first page)
+          try {
+            const pdfThumbResult = await generatePdfThumbBlob(new File([pdfBlob], docIdForPdf + ".pdf", { type: "application/pdf" }));
+            if (pdfThumbResult?.blob) {
+              const pdfThumbResp = await apiFetch(
+                "/api/objects/thumb-upload?key=" + encodeURIComponent(pdfKey) +
+                "&ext=" + encodeURIComponent(pdfThumbResult.ext),
+                { method: "POST", headers: { "Content-Type": "image/jpeg" }, body: pdfThumbResult.blob },
+              ).then((r) => r.json());
+              pdfThumbKey = pdfThumbResp.thumb_key;
+            }
+          } catch (e) { console.error("pdf thumb failed", e); }
+        }
+        tick();
+
+        const docThumbKey = pdfThumbKey || pageThumbKeys[0];
+        const pages = list.map(({ file }, i) => ({
           key: uploadedKeys[i],
-          filename: file.name,
-          content_type: file.type,
-          size: file.size,
+          filename: file.name.replace(/\.[^.]+$/, "") + ".jpg",
+          content_type: "image/jpeg",
+          size: processedBlobs[i]?.blob?.size || null,
           page_number: i + 1,
           thumb_key: pageThumbKeys[i],
+          original_key: originalKeys[i],
         }));
 
-        await apiFetch("/api/documents/register", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            id: docId,
-            title: list[0].name,
-            pages,
-            tags,
-            thumb_key: pageThumbKeys[0],
-          }),
-        });
-
-        await refreshAll();
+        if (addDocId) {
+          await apiFetch("/api/documents/" + encodeURIComponent(addDocId) + "/pages", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ pages }),
+          });
+          if (pdfKey) {
+            await apiFetch("/api/documents/" + encodeURIComponent(addDocId) + "/pdf", {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ pdf_key: pdfKey, correction_settings: settings, thumb_key: pdfThumbKey || undefined, pages: pages.map((p, i) => ({ key: p.key, original_key: originalKeys[i] })) }),
+            });
+          }
+          await refreshAll();
+          await refreshPagesView();
+        } else {
+          const docId = "doc_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
+          await apiFetch("/api/documents/register", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              id: docId,
+              title: list[0].file.name,
+              pages,
+              tags: tags || [],
+              thumb_key: docThumbKey,
+            }),
+          });
+          if (pdfKey) {
+            await apiFetch("/api/documents/" + encodeURIComponent(docId) + "/pdf", {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ pdf_key: pdfKey, correction_settings: settings, thumb_key: pdfThumbKey || undefined, pages: pages.map((p, i) => ({ key: p.key, original_key: originalKeys[i] })) }),
+            });
+          }
+          await refreshAll();
+        }
       } catch (e) {
         console.error("upload failed:", e);
-        uploadError.value = e?.message || "Upload failed. All files will be cleaned up.";
-        for (const key of uploadedKeys) {
+        uploadError.value = e?.message || "Upload failed.";
+        for (const key of [...uploadedKeys, ...originalKeys]) {
           try { await apiFetch("/api/objects/" + encodeURIComponent(key), { method: "DELETE" }); } catch {}
         }
       } finally {
         uploading.value = false;
         uploadProgress.value = 0;
+      }
+    };
+
+    const uploadFiles = async (filesToUpload) => {
+      const allFiles = Array.from(filesToUpload || []).filter((f) => f instanceof File);
+      if (!allFiles.length) return;
+      allFiles.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+
+      const imageFiles = allFiles.filter((f) => isImage(f.name));
+      const otherFiles = allFiles.filter((f) => !isImage(f.name));
+
+      // Non-image files: use simple upload (no processing modal)
+      if (otherFiles.length) {
+        const title = otherFiles.length === 1 ? "Enter tags" : "Enter tags for all files";
+        const result = await openTagsModal({ title, initialValue: "" });
+        if (result === null) return;
+        const tags = parseTagsInput(result);
+        uploading.value = true; uploadProgress.value = 0; uploadError.value = "";
+        const uploadedKeys = [];
+        try {
+          for (let i = 0; i < otherFiles.length; i++) {
+            const file = otherFiles[i];
+            const resp = await apiFetch(
+              "/api/objects/upload?filename=" + encodeURIComponent(file.name) +
+              "&content_type=" + encodeURIComponent(file.type || "application/octet-stream"),
+              { method: "POST", body: file },
+            ).then((r) => r.json());
+            uploadedKeys.push(resp.key);
+            uploadProgress.value = Math.round(((i + 1) / otherFiles.length) * 100);
+          }
+          const pageThumbKeys = [];
+          for (let i = 0; i < otherFiles.length; i++) {
+            let thumbKey = null;
+            try {
+              const t = isPdf(otherFiles[i].name) ? await generatePdfThumbBlob(otherFiles[i]) : null;
+              if (t?.blob) {
+                const tr = await apiFetch(
+                  "/api/objects/thumb-upload?key=" + encodeURIComponent(uploadedKeys[i]) + "&ext=" + encodeURIComponent(t.ext),
+                  { method: "POST", headers: { "Content-Type": t.ext === "webp" ? "image/webp" : "image/jpeg" }, body: t.blob },
+                ).then((r) => r.json());
+                thumbKey = tr.thumb_key;
+              }
+            } catch {}
+            pageThumbKeys.push(thumbKey);
+          }
+          const docId = "doc_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
+          await apiFetch("/api/documents/register", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              id: docId,
+              title: otherFiles[0].name,
+              pages: otherFiles.map((f, i) => ({ key: uploadedKeys[i], filename: f.name, content_type: f.type, size: f.size, page_number: i + 1, thumb_key: pageThumbKeys[i] })),
+              tags,
+              thumb_key: pageThumbKeys[0],
+            }),
+          });
+          await refreshAll();
+        } catch (e) {
+          uploadError.value = e?.message || "Upload failed.";
+          for (const k of uploadedKeys) { try { await apiFetch("/api/objects/" + encodeURIComponent(k), { method: "DELETE" }); } catch {} }
+        } finally { uploading.value = false; uploadProgress.value = 0; }
+      }
+
+      // Image files: show processing modal
+      if (imageFiles.length) {
+        const pages = await openPdfModal(imageFiles);
+        if (!pages) return; // cancelled
+        const title = imageFiles.length === 1 ? "Enter tags" : "Enter tags for all files";
+        const tagsResult = await openTagsModal({ title, initialValue: "" });
+        if (tagsResult === null) return;
+        const decodedList = pdfModalPages.value.slice(0, imageFiles.length);
+        await processAndUploadPages(decodedList, pages, null, parseTagsInput(tagsResult));
       }
     };
 
@@ -456,78 +934,14 @@ createApp({
       if (!input?.files?.length || !addPagesTargetDocId) return;
       const docId = addPagesTargetDocId;
       addPagesTargetDocId = null;
-      try { await addFilesToDocument(docId, input.files); } finally { try { input.value = ""; } catch {} }
-    };
-
-    const addFilesToDocument = async (docId, filesToUpload) => {
-      const list = Array.from(filesToUpload || []).filter((f) => f instanceof File);
-      if (!list.length) return;
-
-      list.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
-
-      uploading.value = true;
-      uploadProgress.value = 0;
-      uploadError.value = "";
-
-      const uploadedKeys = [];
       try {
-        for (let i = 0; i < list.length; i++) {
-          const file = list[i];
-          const uploadResp = await apiFetch(
-            "/api/objects/upload?filename=" + encodeURIComponent(file.name) +
-            "&content_type=" + encodeURIComponent(file.type || "application/octet-stream"),
-            { method: "POST", body: file },
-          ).then((r) => r.json());
-          uploadedKeys.push(uploadResp.key);
-          uploadProgress.value = Math.round(((i + 1) / list.length) * 100);
-        }
-
-        const pageThumbKeys = [];
-        for (let i = 0; i < list.length; i++) {
-          const file = list[i];
-          let pageThumbKey = null;
-          try {
-            const thumb = isImage(file.name) ? await generateImageThumbBlob(file)
-              : isPdf(file.name) ? await generatePdfThumbBlob(file)
-              : null;
-            if (thumb?.blob && thumb?.ext) {
-              const thumbResp = await apiFetch(
-                "/api/objects/thumb-upload?key=" + encodeURIComponent(uploadedKeys[i]) +
-                "&ext=" + encodeURIComponent(thumb.ext),
-                { method: "POST", headers: { "Content-Type": thumb.ext === "webp" ? "image/webp" : "image/jpeg" }, body: thumb.blob },
-              ).then((r) => r.json());
-              pageThumbKey = thumbResp.thumb_key;
-            }
-          } catch (e) { console.error("thumb generation failed for page", i + 1, ":", e); }
-          pageThumbKeys.push(pageThumbKey);
-        }
-
-        const pages = list.map((file, i) => ({
-          key: uploadedKeys[i],
-          filename: file.name,
-          content_type: file.type,
-          size: file.size,
-          thumb_key: pageThumbKeys[i],
-        }));
-
-        await apiFetch("/api/documents/" + encodeURIComponent(docId) + "/pages", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ pages }),
-        });
-
-        await refreshAll();
-        await refreshPagesView();
-      } catch (e) {
-        console.error("add pages failed:", e);
-        uploadError.value = e?.message || "Failed to add pages. Cleaning up.";
-        for (const key of uploadedKeys) {
-          try { await apiFetch("/api/objects/" + encodeURIComponent(key), { method: "DELETE" }); } catch {}
-        }
-      } finally {
-        uploading.value = false;
-        uploadProgress.value = 0;
-      }
+        const files = Array.from(input.files).filter((f) => f instanceof File && isImage(f.name));
+        if (!files.length) return;
+        const settings = await openPdfModal(files, docId);
+        if (!settings) return;
+        const decodedList = pdfModalPages.value.slice(0, files.length);
+        await processAndUploadPages(decodedList, settings, docId, null);
+      } finally { try { input.value = ""; } catch {} }
     };
 
     const isDragOver = ref(false);
@@ -590,6 +1004,13 @@ createApp({
     // Document actions
     const viewDocument = async (doc) => {
       try {
+        // If document has a PDF — always open it directly
+        if (doc.pdf_key) {
+          const url = "/api/objects/download-url?key=" + encodeURIComponent(doc.pdf_key);
+          window.open(url, "_blank");
+          return;
+        }
+        // Fallback for non-PDF documents
         if (doc.page_count === 1) {
           const resp = await apiFetch("/api/documents/" + encodeURIComponent(doc.id) + "/pages").then((r) => r.json());
           const page = (resp.pages || [])[0];
@@ -648,6 +1069,141 @@ createApp({
       } catch (e) { console.error(e); }
     };
 
+    const regeneratePdf = async (doc) => {
+      uploading.value = true;
+      uploadError.value = "";
+      try {
+        // Fetch original keys and saved settings
+        const settings = await apiFetch(
+          "/api/documents/" + encodeURIComponent(doc.id) + "/pdf-settings",
+        ).then((r) => r.json());
+
+        if (!settings.pages?.length) {
+          uploadError.value = "No pages found for this document.";
+          uploading.value = false;
+          return;
+        }
+
+        // Download each page: use original_key if available, else fall back to processed key
+        uploading.value = false;
+        uploadProgress.value = 0;
+        const decodedPages = [];
+        for (const p of settings.pages) {
+          const sourceKey = p.original_key || p.key;
+          const blob = await apiFetch(
+            "/api/objects/download-url?key=" + encodeURIComponent(sourceKey),
+          ).then((r) => r.blob());
+          const filename = sourceKey.split("/").pop() || "page.jpg";
+          const file = new File([blob], filename, { type: blob.type || "image/jpeg" });
+          const img = await decodeImageFile(file);
+          decodedPages.push({ file, img, baseImageData: null, autoVals: null, sourceKey });
+        }
+
+        // Open modal — modal runs auto-processing and populates baseImageData for each page
+        const confirmed = await openPdfModal(decodedPages.map((p) => p.file));
+        if (!confirmed) return;
+
+        uploading.value = true;
+        uploadProgress.value = 0;
+
+        const pageList = pdfModalPages.value;
+        const finalSettings = { brightness: pdfModalBrightness.value, contrast: pdfModalContrast.value, sharpness: pdfModalSharpness.value };
+        const totalSteps = pageList.length * 2 + 1; // processed file + thumb + pdf
+        let step = 0;
+        const tick = () => { step++; uploadProgress.value = Math.round((step / totalSteps) * 100); };
+
+        // Re-render and overwrite each processed file; update thumb
+        const updatedPages = [];
+        let newThumbKey = null;
+        for (let i = 0; i < pageList.length; i++) {
+          const page = pageList[i];
+          const srcPage = settings.pages[i];
+          const { blob: procBlob } = await renderPageBlob(page, finalSettings);
+          const pageFilename = (srcPage.key || "").split("/").pop() || "page.jpg";
+
+          // Overwrite the existing processed file in R2 at the same key
+          await apiFetch(
+            "/api/objects/replace?key=" + encodeURIComponent(srcPage.key) +
+            "&content_type=image/jpeg",
+            { method: "PUT", body: procBlob },
+          ).then((r) => r.json());
+          tick();
+
+          // Regenerate thumb
+          let thumbKey = srcPage.thumb_key || null;
+          try {
+            const thumbResult = await generateImageThumbBlob(new File([procBlob], pageFilename, { type: "image/jpeg" }));
+            if (thumbResult?.blob) {
+              const thumbResp = await apiFetch(
+                "/api/objects/thumb-upload?key=" + encodeURIComponent(srcPage.key) +
+                "&ext=" + encodeURIComponent(thumbResult.ext),
+                { method: "POST", headers: { "Content-Type": thumbResult.ext === "webp" ? "image/webp" : "image/jpeg" }, body: thumbResult.blob },
+              ).then((r) => r.json());
+              thumbKey = thumbResp.thumb_key;
+              if (i === 0) newThumbKey = thumbKey;
+            }
+          } catch (e) { console.error("thumb regen failed", e); }
+          tick();
+
+          // Pass original_key only if we have a real original — COALESCE in DB protects existing values
+          updatedPages.push({ key: srcPage.key, original_key: srcPage.original_key || null, thumb_key: thumbKey });
+        }
+
+        // Regenerate PDF — overwrite existing pdf_key if present, else create new
+        const pdfBlob = await renderPdfBlob(pageList, finalSettings);
+        if (!pdfBlob) { uploadError.value = "PDF generation failed."; return; }
+        let pdfKey;
+        if (doc.pdf_key) {
+          await apiFetch(
+            "/api/objects/replace?key=" + encodeURIComponent(doc.pdf_key) +
+            "&content_type=application/pdf",
+            { method: "PUT", body: pdfBlob },
+          ).then((r) => r.json());
+          pdfKey = doc.pdf_key;
+        } else {
+          const pdfResp = await apiFetch(
+            "/api/objects/upload?filename=" + encodeURIComponent(doc.id + ".pdf") +
+            "&content_type=application/pdf",
+            { method: "POST", body: pdfBlob },
+          ).then((r) => r.json());
+          pdfKey = pdfResp.key;
+        }
+
+        // Generate thumb from PDF first page
+        let pdfThumbKey = null;
+        try {
+          const pdfThumbResult = await generatePdfThumbBlob(new File([pdfBlob], doc.id + ".pdf", { type: "application/pdf" }));
+          if (pdfThumbResult?.blob) {
+            const pdfThumbResp = await apiFetch(
+              "/api/objects/thumb-upload?key=" + encodeURIComponent(pdfKey) +
+              "&ext=" + encodeURIComponent(pdfThumbResult.ext),
+              { method: "POST", headers: { "Content-Type": "image/jpeg" }, body: pdfThumbResult.blob },
+            ).then((r) => r.json());
+            pdfThumbKey = pdfThumbResp.thumb_key;
+          }
+        } catch (e) { console.error("pdf thumb regen failed", e); }
+        tick();
+
+        // Persist: use PDF thumb as document thumb; fallback to page thumb
+        const putBody = { pdf_key: pdfKey, correction_settings: finalSettings, pages: updatedPages };
+        putBody.thumb_key = pdfThumbKey || newThumbKey || undefined;
+        await apiFetch("/api/documents/" + encodeURIComponent(doc.id) + "/pdf", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(putBody),
+        });
+
+        uploadProgress.value = 100;
+        await refreshAll();
+      } catch (e) {
+        console.error("regenerate failed:", e);
+        uploadError.value = e?.message || "Regeneration failed.";
+      } finally {
+        uploading.value = false;
+        uploadProgress.value = 0;
+      }
+    };
+
     const downloadPage = async (page) => {
       try {
         const url = "/api/objects/download-url?key=" + encodeURIComponent(page.key);
@@ -693,6 +1249,13 @@ createApp({
       isDragOver, onDragOver, onDragEnter, onDragLeave, onDrop,
       triggerAddPages, handleAddPagesInput,
       usage, usagePct, formatNum,
+      pdfModalOpen, pdfModalProcessing, pdfModalPages, pdfModalPageIdx,
+      pdfModalBrightness, pdfModalContrast, pdfModalSharpness,
+      pdfModalSizeKb, pdfModalCanvas, pdfModalCurrentPage,
+      pdfModalOnSlider, pdfModalConfirm, pdfModalCancel,
+      pdfModalPreview, pdfZoom, pdfCanvasStyle, pdfZoomIn, pdfZoomOut, pdfZoomReset, onPdfPreviewWheel,
+      onPdfDragStart, onPdfDragMove, onPdfDragEnd,
+      regeneratePdf,
     };
   },
 }).mount("#app");

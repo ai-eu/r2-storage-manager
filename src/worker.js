@@ -193,6 +193,18 @@ const ensureSchema = async (db) => {
   if (!colNames.has("page_number")) {
     await db.prepare("ALTER TABLE objects ADD COLUMN page_number INTEGER").run();
   }
+  if (!colNames.has("original_key")) {
+    await db.prepare("ALTER TABLE objects ADD COLUMN original_key TEXT").run();
+  }
+
+  const docCols = await db.prepare("PRAGMA table_info(documents)").all();
+  const docColNames = new Set((docCols.results || []).map((r) => r.name));
+  if (!docColNames.has("pdf_key")) {
+    await db.prepare("ALTER TABLE documents ADD COLUMN pdf_key TEXT").run();
+  }
+  if (!docColNames.has("correction_settings")) {
+    await db.prepare("ALTER TABLE documents ADD COLUMN correction_settings TEXT").run();
+  }
 
   await db.prepare(
     "CREATE INDEX IF NOT EXISTS idx_objects_uploaded ON objects(uploaded_at)",
@@ -285,6 +297,18 @@ app.post("/api/objects/upload", async (c) => {
   await c.env.MY_BUCKET.put(key, body, {
     httpMetadata: { contentType },
   });
+
+  return c.json({ key });
+});
+
+// ── PUT /api/objects/replace — overwrite existing R2 object by key ──
+app.put("/api/objects/replace", async (c) => {
+  const key = c.req.query("key");
+  const contentType = c.req.query("content_type") || "application/octet-stream";
+  if (!key) return c.json({ error: "key required" }, 400);
+
+  const body = await c.req.arrayBuffer();
+  await c.env.MY_BUCKET.put(key, body, { httpMetadata: { contentType } });
 
   return c.json({ key });
 });
@@ -426,16 +450,17 @@ app.post("/api/documents/register", async (c) => {
       if (!p.key || typeof p.filename !== "string" || !p.filename.trim()) continue;
       stmts.push(
         db.prepare(
-          `INSERT INTO objects(key, filename, content_type, size, uploaded_at, thumb_key, document_id, page_number)
-           VALUES(?,?,?,?,?,?,?,?)
+          `INSERT INTO objects(key, filename, content_type, size, uploaded_at, thumb_key, document_id, page_number, original_key)
+           VALUES(?,?,?,?,?,?,?,?,?)
            ON CONFLICT(key) DO UPDATE SET
              filename=excluded.filename, content_type=excluded.content_type,
              size=excluded.size, uploaded_at=excluded.uploaded_at, thumb_key=excluded.thumb_key,
-             document_id=excluded.document_id, page_number=excluded.page_number`,
+             document_id=excluded.document_id, page_number=excluded.page_number,
+             original_key=excluded.original_key`,
         ).bind(
           p.key, p.filename.trim(), p.content_type || null,
           p.size || null, uploadedAt, p.thumb_key || null,
-          id, p.page_number || null,
+          id, p.page_number || null, p.original_key || null,
         ),
       );
     }
@@ -457,7 +482,7 @@ app.get("/api/documents", async (c) => {
     await ensureSchema(db);
 
     const parts = [
-      "SELECT d.id, d.title, d.page_count, d.uploaded_at, d.thumb_key,",
+      "SELECT d.id, d.title, d.page_count, d.uploaded_at, d.thumb_key, d.pdf_key,",
       "  COALESCE(GROUP_CONCAT(dt.tag), '') AS tags",
       "FROM documents d",
       "LEFT JOIN document_tags dt ON dt.document_id = d.id",
@@ -485,6 +510,7 @@ app.get("/api/documents", async (c) => {
       page_count: r.page_count,
       uploaded_at: r.uploaded_at,
       thumb_key: r.thumb_key || null,
+      pdf_key: r.pdf_key || null,
       tags: parseCsvTags(r.tags || ""),
     }));
 
@@ -553,16 +579,17 @@ app.post("/api/documents/:id{[^/]+}/pages", async (c) => {
       if (!p.key || typeof p.filename !== "string" || !p.filename.trim()) continue;
       stmts.push(
         db.prepare(
-          `INSERT INTO objects(key, filename, content_type, size, uploaded_at, thumb_key, document_id, page_number)
-           VALUES(?,?,?,?,?,?,?,?)
+          `INSERT INTO objects(key, filename, content_type, size, uploaded_at, thumb_key, document_id, page_number, original_key)
+           VALUES(?,?,?,?,?,?,?,?,?)
            ON CONFLICT(key) DO UPDATE SET
              filename=excluded.filename, content_type=excluded.content_type,
              size=excluded.size, uploaded_at=excluded.uploaded_at, thumb_key=excluded.thumb_key,
-             document_id=excluded.document_id, page_number=excluded.page_number`,
+             document_id=excluded.document_id, page_number=excluded.page_number,
+             original_key=excluded.original_key`,
         ).bind(
           p.key, p.filename.trim(), p.content_type || null,
           p.size || null, Date.now(), p.thumb_key || null,
-          docId, startPage + i,
+          docId, startPage + i, p.original_key || null,
         ),
       );
     }
@@ -688,6 +715,107 @@ app.delete("/api/documents/:id{[^/]+}/pages", async (c) => {
 
     await db.batch(stmts);
     return c.json({ success: true, page_count: pages.length });
+  } catch (err) {
+    return c.json({ error: err?.message || String(err) }, 500);
+  }
+});
+
+// ── GET /api/documents/:id/pdf-settings ──
+app.get("/api/documents/:id{[^/]+}/pdf-settings", async (c) => {
+  const docId = c.req.param("id");
+  const db = c.env.DB;
+  if (!db) return c.json({ error: "DB not configured" }, 500);
+
+  try {
+    await ensureSchema(db);
+
+    const doc = await db
+      .prepare("SELECT pdf_key, correction_settings FROM documents WHERE id=? LIMIT 1")
+      .bind(docId)
+      .first();
+    if (!doc) return c.json({ error: "Not found" }, 404);
+
+    const rows = await db
+      .prepare(
+        "SELECT key, original_key, thumb_key, page_number FROM objects WHERE document_id=? ORDER BY page_number",
+      )
+      .bind(docId)
+      .all();
+
+    let correctionSettings = null;
+    try { correctionSettings = doc.correction_settings ? JSON.parse(doc.correction_settings) : null; } catch {}
+
+    return c.json({
+      pdf_key: doc.pdf_key || null,
+      correction_settings: correctionSettings,
+      pages: (rows.results || []).map((r) => ({
+        key: r.key,
+        original_key: r.original_key || null,
+        thumb_key: r.thumb_key || null,
+        page_number: r.page_number || 1,
+      })),
+    });
+  } catch (err) {
+    return c.json({ error: err?.message || String(err) }, 500);
+  }
+});
+
+// ── PUT /api/documents/:id/pdf ──
+app.put("/api/documents/:id{[^/]+}/pdf", async (c) => {
+  const docId = c.req.param("id");
+  const db = c.env.DB;
+  if (!db) return c.json({ error: "DB not configured" }, 500);
+
+  const body = await c.req.json().catch(() => null);
+  if (!body) return c.json({ error: "Invalid JSON" }, 400);
+
+  const { pdf_key, correction_settings, thumb_key, pages } = body;
+
+  try {
+    await ensureSchema(db);
+
+    const exists = await db
+      .prepare("SELECT 1 AS ok FROM documents WHERE id=? LIMIT 1")
+      .bind(docId)
+      .first();
+    if (!exists) return c.json({ error: "Not found" }, 404);
+
+    // Build documents UPDATE dynamically — only set thumb_key if provided
+    const docSetParts = ["pdf_key=?", "correction_settings=?"];
+    const docBinds = [
+      pdf_key || null,
+      correction_settings ? JSON.stringify(correction_settings) : null,
+    ];
+    if (thumb_key !== undefined) {
+      docSetParts.push("thumb_key=?");
+      docBinds.push(thumb_key || null);
+    }
+    docBinds.push(docId);
+
+    const stmts = [
+      db.prepare(`UPDATE documents SET ${docSetParts.join(", ")} WHERE id=?`).bind(...docBinds),
+    ];
+
+    if (Array.isArray(pages)) {
+      for (const p of pages) {
+        if (!p.key) continue;
+        if (p.thumb_key !== undefined) {
+          // Set original_key only if not already set (never overwrite an existing original)
+          stmts.push(
+            db.prepare("UPDATE objects SET original_key=COALESCE(original_key,?), thumb_key=? WHERE key=? AND document_id=?")
+              .bind(p.original_key || null, p.thumb_key, p.key, docId),
+          );
+        } else {
+          stmts.push(
+            db.prepare("UPDATE objects SET original_key=COALESCE(original_key,?) WHERE key=? AND document_id=?")
+              .bind(p.original_key || null, p.key, docId),
+          );
+        }
+      }
+    }
+
+    await db.batch(stmts);
+    return c.json({ success: true });
   } catch (err) {
     return c.json({ error: err?.message || String(err) }, 500);
   }
@@ -921,10 +1049,12 @@ app.get("/api/usage", async (c) => {
   try {
     await ensureSchema(db);
 
-    const today = new Date().toISOString().slice(0, 10);
+    const now = new Date();
+    const today = now.toISOString().slice(0, 10);
+    const hourBucket = now.toISOString().slice(0, 13);
     const cached = await db
       .prepare("SELECT data FROM usage_cache WHERE date=?")
-      .bind(today)
+      .bind(hourBucket)
       .first();
 
     if (cached) {
@@ -936,9 +1066,12 @@ app.get("/api/usage", async (c) => {
       return c.json({ used: 0, limit: WORKERS_FREE_LIMIT, remaining: WORKERS_FREE_LIMIT, date: today, unavailable: true });
     }
 
-    await db.prepare(
-      "INSERT OR REPLACE INTO usage_cache(date, data, fetched_at) VALUES(?,?,?)",
-    ).bind(today, JSON.stringify(usage), Date.now()).run();
+    await db.batch([
+      db.prepare("DELETE FROM usage_cache WHERE date <> ?").bind(hourBucket),
+      db.prepare(
+        "INSERT OR REPLACE INTO usage_cache(date, data, fetched_at) VALUES(?,?,?)",
+      ).bind(hourBucket, JSON.stringify(usage), Date.now()),
+    ]);
 
     return c.json(usage);
   } catch (err) {

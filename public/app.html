@@ -78,6 +78,9 @@
               <button @click.stop="menuKey=null;triggerAddPages(doc.id)" title="Add pages">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
               </button>
+              <button @click.stop="menuKey=null;regeneratePdf(doc)" title="Re-process PDF">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+              </button>
               <button @click.stop="menuKey=null;deleteDocument(doc)" class="delete" title="Delete">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
               </button>
@@ -98,6 +101,68 @@
         <div v-if="uploadError" class="upload-error">{{ uploadError }}</div>
       </div>
     </main>
+
+    <!-- PDF processing modal (fullscreen) -->
+    <div v-if="pdfModalOpen" class="pdf-fullscreen">
+
+      <div class="pdf-fs-sidebar">
+        <div class="pdf-fs-title">
+          Process image
+          <span v-if="pdfModalPages.length > 1" class="pdf-modal-pager">
+            {{ pdfModalPageIdx + 1 }} / {{ pdfModalPages.length }}
+          </span>
+        </div>
+
+        <div v-if="!pdfModalProcessing" class="pdf-fs-sliders">
+          <div class="pdf-slider-row">
+            <label class="pdf-slider-label">Brightness</label>
+            <input type="range" min="-50" max="50" step="1"
+              v-model.number="pdfModalBrightness" @input="pdfModalOnSlider" class="pdf-slider" />
+            <span class="pdf-slider-val">{{ pdfModalBrightness > 0 ? '+' : '' }}{{ pdfModalBrightness }}</span>
+          </div>
+          <div class="pdf-slider-row">
+            <label class="pdf-slider-label">Contrast</label>
+            <input type="range" min="-50" max="50" step="1"
+              v-model.number="pdfModalContrast" @input="pdfModalOnSlider" class="pdf-slider" />
+            <span class="pdf-slider-val">{{ pdfModalContrast > 0 ? '+' : '' }}{{ pdfModalContrast }}</span>
+          </div>
+          <div class="pdf-slider-row">
+            <label class="pdf-slider-label">Sharpness</label>
+            <input type="range" min="0" max="100" step="5"
+              v-model.number="pdfModalSharpness" @input="pdfModalOnSlider" class="pdf-slider" />
+            <span class="pdf-slider-val">{{ pdfModalSharpness }}%</span>
+          </div>
+          <div class="pdf-modal-size" v-if="pdfModalSizeKb !== null">
+            Est. size: <strong>{{ pdfModalSizeKb }} KB</strong>
+            <span v-if="pdfModalSizeKb > 1024" class="pdf-size-warn"> (large)</span>
+          </div>
+        </div>
+
+        <div class="pdf-fs-actions">
+          <button @click="pdfModalCancel" class="btn-secondary">Cancel</button>
+          <button @click="pdfModalConfirm" class="btn-primary" :disabled="pdfModalProcessing">Save</button>
+        </div>
+      </div>
+
+      <div class="pdf-fs-main">
+        <div class="pdf-fs-toolbar">
+          <button @click="pdfZoomOut" class="pdf-zoom-btn" title="Zoom out">−</button>
+          <span class="pdf-zoom-val" @click="pdfZoomReset" title="Reset zoom">{{ Math.round(pdfZoom * 100) }}%</span>
+          <button @click="pdfZoomIn" class="pdf-zoom-btn" title="Zoom in">+</button>
+        </div>
+        <div v-if="pdfModalProcessing" class="pdf-modal-loading">Processing...</div>
+        <div v-else class="pdf-fs-scroll"
+          ref="pdfModalPreview"
+          @wheel.prevent="onPdfPreviewWheel"
+          @mousedown="onPdfDragStart"
+          @mousemove="onPdfDragMove"
+          @mouseup="onPdfDragEnd"
+          @mouseleave="onPdfDragEnd">
+          <canvas ref="pdfModalCanvas" class="pdf-modal-canvas" :style="pdfCanvasStyle"></canvas>
+        </div>
+      </div>
+
+    </div>
 
     <!-- Tag modal -->
     <div v-if="tagModalOpen" class="modal-overlay" @click.self="closeTagsModal(null)">
@@ -159,6 +224,7 @@
   </div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>
