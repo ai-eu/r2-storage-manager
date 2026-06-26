@@ -670,7 +670,31 @@ createApp({
       return { blob, width: w, height: h };
     };
 
-    // Generate PDF blob from already-processed pages.
+    const blobToDataUrl = (blob) => new Promise((r) => {
+      const reader = new FileReader();
+      reader.onload = () => r(reader.result);
+      reader.readAsDataURL(blob);
+    });
+
+    // Add one JPEG blob as a page to jsPDF — reads dimensions from Image.
+    const addJpegBlobToPdf = async (pdf, blob, jspdf) => {
+      const dataUrl = await blobToDataUrl(blob);
+      const img = await new Promise((r) => {
+        const i = new Image();
+        i.onload = () => r(i);
+        i.src = dataUrl;
+      });
+      const w = img.naturalWidth, h = img.naturalHeight;
+      if (!pdf) {
+        pdf = new jspdf({ orientation: w > h ? "l" : "p", unit: "px", format: [w, h], hotfixes: ["px_scaling"] });
+      } else {
+        pdf.addPage([w, h], w > h ? "l" : "p");
+      }
+      pdf.addImage(dataUrl, "JPEG", 0, 0, w, h);
+      return pdf;
+    };
+
+    // Generate PDF blob from already-processed pages (have baseImageData).
     const renderPdfBlob = async (pages, settings) => {
       const jspdf = window.jspdf?.jsPDF;
       if (!jspdf) throw new Error("jsPDF not loaded");
@@ -679,11 +703,7 @@ createApp({
       for (const page of pages) {
         const { blob, width: w, height: h } = await renderPageBlob(page, settings);
         if (!blob) continue;
-        const dataUrl = await new Promise((r) => {
-          const reader = new FileReader();
-          reader.onload = () => r(reader.result);
-          reader.readAsDataURL(blob);
-        });
+        const dataUrl = await blobToDataUrl(blob);
         if (!pdf) {
           pdf = new jspdf({ orientation: w > h ? "l" : "p", unit: "px", format: [w, h], hotfixes: ["px_scaling"] });
         } else {
@@ -796,18 +816,92 @@ createApp({
         }));
 
         if (addDocId) {
+          // Register new pages first so page_count is correct
           await apiFetch("/api/documents/" + encodeURIComponent(addDocId) + "/pages", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ pages }),
           });
-          if (pdfKey) {
-            await apiFetch("/api/documents/" + encodeURIComponent(addDocId) + "/pdf", {
-              method: "PUT",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ pdf_key: pdfKey, correction_settings: settings, thumb_key: pdfThumbKey || undefined, pages: pages.map((p, i) => ({ key: p.key, original_key: originalKeys[i] })) }),
-            });
+
+          // Rebuild full PDF: fetch existing pages from DB, download their processed files,
+          // then append new pages (already rendered as processedBlobs) — all in page_number order.
+          const jspdf = window.jspdf?.jsPDF;
+          if (jspdf) {
+            try {
+              const existingResp = await apiFetch(
+                "/api/documents/" + encodeURIComponent(addDocId) + "/pages",
+              ).then((r) => r.json());
+              const allPages = (existingResp.pages || []).sort((a, b) => (a.page_number || 0) - (b.page_number || 0));
+
+              // Separate existing pages (already in R2) from the just-added new ones
+              const newKeys = new Set(uploadedKeys);
+              let fullPdf = null;
+
+              for (const p of allPages) {
+                if (newKeys.has(p.key)) {
+                  // New page — use already-rendered blob
+                  const idx = uploadedKeys.indexOf(p.key);
+                  const blob = processedBlobs[idx]?.blob;
+                  if (blob) fullPdf = await addJpegBlobToPdf(fullPdf, blob, jspdf);
+                } else {
+                  // Existing page — download processed file from R2
+                  const blob = await apiFetch(
+                    "/api/objects/download-url?key=" + encodeURIComponent(p.key),
+                  ).then((r) => r.blob());
+                  if (blob?.size) fullPdf = await addJpegBlobToPdf(fullPdf, blob, jspdf);
+                }
+              }
+
+              if (fullPdf) {
+                const fullPdfBlob = fullPdf.output("blob");
+                // Get existing pdf_key to overwrite, or create new
+                const docSettings = await apiFetch(
+                  "/api/documents/" + encodeURIComponent(addDocId) + "/pdf-settings",
+                ).then((r) => r.json());
+                let fullPdfKey;
+                if (docSettings.pdf_key) {
+                  await apiFetch(
+                    "/api/objects/replace?key=" + encodeURIComponent(docSettings.pdf_key) +
+                    "&content_type=application/pdf",
+                    { method: "PUT", body: fullPdfBlob },
+                  ).then((r) => r.json());
+                  fullPdfKey = docSettings.pdf_key;
+                } else {
+                  const r = await apiFetch(
+                    "/api/objects/upload?filename=" + encodeURIComponent(addDocId + ".pdf") +
+                    "&content_type=application/pdf",
+                    { method: "POST", body: fullPdfBlob },
+                  ).then((r) => r.json());
+                  fullPdfKey = r.key;
+                }
+                // Generate PDF thumb from full PDF
+                let fullPdfThumbKey = null;
+                try {
+                  const t = await generatePdfThumbBlob(new File([fullPdfBlob], addDocId + ".pdf", { type: "application/pdf" }));
+                  if (t?.blob) {
+                    const tr = await apiFetch(
+                      "/api/objects/thumb-upload?key=" + encodeURIComponent(fullPdfKey) +
+                      "&ext=" + encodeURIComponent(t.ext),
+                      { method: "POST", headers: { "Content-Type": "image/jpeg" }, body: t.blob },
+                    ).then((r) => r.json());
+                    fullPdfThumbKey = tr.thumb_key;
+                  }
+                } catch (e) { console.error("full pdf thumb failed", e); }
+
+                await apiFetch("/api/documents/" + encodeURIComponent(addDocId) + "/pdf", {
+                  method: "PUT",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    pdf_key: fullPdfKey,
+                    correction_settings: settings,
+                    ...(fullPdfThumbKey ? { thumb_key: fullPdfThumbKey } : {}),
+                    pages: pages.map((p, i) => ({ key: p.key, original_key: originalKeys[i] })),
+                  }),
+                });
+              }
+            } catch (e) { console.error("full pdf rebuild failed", e); }
           }
+
           await refreshAll();
           await refreshPagesView();
         } else {
@@ -983,12 +1077,68 @@ createApp({
       } catch (e) { console.error(e); }
     };
 
+    // Rebuild PDF from the current pagesViewList order, upload/overwrite, update thumb + D1.
+    const rebuildPdfForDoc = async (docId, pageList, docPdfKey) => {
+      const jspdf = window.jspdf?.jsPDF;
+      if (!jspdf || !pageList.length) return;
+      try {
+        uploading.value = true;
+        let fullPdf = null;
+        for (const p of pageList) {
+          const blob = await apiFetch(
+            "/api/objects/download-url?key=" + encodeURIComponent(p.key),
+          ).then((r) => r.blob());
+          if (blob?.size) fullPdf = await addJpegBlobToPdf(fullPdf, blob, jspdf);
+        }
+        if (!fullPdf) return;
+        const fullPdfBlob = fullPdf.output("blob");
+
+        let pdfKey;
+        if (docPdfKey) {
+          await apiFetch(
+            "/api/objects/replace?key=" + encodeURIComponent(docPdfKey) + "&content_type=application/pdf",
+            { method: "PUT", body: fullPdfBlob },
+          );
+          pdfKey = docPdfKey;
+        } else {
+          const r = await apiFetch(
+            "/api/objects/upload?filename=" + encodeURIComponent(docId + ".pdf") + "&content_type=application/pdf",
+            { method: "POST", body: fullPdfBlob },
+          ).then((r) => r.json());
+          pdfKey = r.key;
+        }
+
+        let newThumbKey = null;
+        try {
+          const t = await generatePdfThumbBlob(new File([fullPdfBlob], docId + ".pdf", { type: "application/pdf" }));
+          if (t?.blob) {
+            const tr = await apiFetch(
+              "/api/objects/thumb-upload?key=" + encodeURIComponent(pdfKey) + "&ext=" + encodeURIComponent(t.ext),
+              { method: "POST", headers: { "Content-Type": "image/jpeg" }, body: t.blob },
+            ).then((r) => r.json());
+            newThumbKey = tr.thumb_key;
+          }
+        } catch (e) { console.error("pdf thumb failed", e); }
+
+        const putBody = { pdf_key: pdfKey };
+        if (newThumbKey) putBody.thumb_key = newThumbKey;
+        await apiFetch("/api/documents/" + encodeURIComponent(docId) + "/pdf", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(putBody),
+        });
+        await refreshAll();
+      } catch (e) { console.error("rebuildPdf failed", e); }
+      finally { uploading.value = false; }
+    };
+
     const deletePage = async (page) => {
       if (!page?.key || !pagesViewDocId.value) return;
       if (!confirm("Delete this page?")) return;
+      const docId = pagesViewDocId.value;
       try {
         const resp = await apiFetch(
-          "/api/documents/" + encodeURIComponent(pagesViewDocId.value) + "/pages?key=" + encodeURIComponent(page.key),
+          "/api/documents/" + encodeURIComponent(docId) + "/pages?key=" + encodeURIComponent(page.key),
           { method: "DELETE" },
         ).then((r) => r.json());
         if (resp.document_deleted) {
@@ -997,7 +1147,67 @@ createApp({
           return;
         }
         await refreshPagesView();
+        // Rebuild PDF without the deleted page
+        const docSettings = await apiFetch(
+          "/api/documents/" + encodeURIComponent(docId) + "/pdf-settings",
+        ).then((r) => r.json());
+        if (docSettings.pdf_key !== undefined) {
+          await rebuildPdfForDoc(docId, pagesViewList.value, docSettings.pdf_key);
+        }
         await refreshAll();
+      } catch (e) { console.error(e); }
+    };
+
+    const movePageUp = async (idx) => {
+      if (idx <= 0) return;
+      const docId = pagesViewDocId.value;
+      const list = [...pagesViewList.value];
+      [list[idx - 1], list[idx]] = [list[idx], list[idx - 1]];
+      pagesViewList.value = list;
+      try {
+        await apiFetch("/api/documents/" + encodeURIComponent(docId) + "/page-order", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ keys: list.map((p) => p.key) }),
+        });
+        const docSettings = await apiFetch(
+          "/api/documents/" + encodeURIComponent(docId) + "/pdf-settings",
+        ).then((r) => r.json());
+        await rebuildPdfForDoc(docId, list, docSettings.pdf_key);
+      } catch (e) { console.error(e); }
+    };
+
+    const movePageDown = async (idx) => {
+      const list = [...pagesViewList.value];
+      if (idx >= list.length - 1) return;
+      const docId = pagesViewDocId.value;
+      [list[idx], list[idx + 1]] = [list[idx + 1], list[idx]];
+      pagesViewList.value = list;
+      try {
+        await apiFetch("/api/documents/" + encodeURIComponent(docId) + "/page-order", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ keys: list.map((p) => p.key) }),
+        });
+        const docSettings = await apiFetch(
+          "/api/documents/" + encodeURIComponent(docId) + "/pdf-settings",
+        ).then((r) => r.json());
+        await rebuildPdfForDoc(docId, list, docSettings.pdf_key);
+      } catch (e) { console.error(e); }
+    };
+
+    const openPagesView = async (doc) => {
+      try {
+        const resp = await apiFetch("/api/documents/" + encodeURIComponent(doc.id) + "/pages").then((r) => r.json());
+        pagesViewList.value = (resp.pages || []).map((p) => ({
+          ...p,
+          thumb_url: p.thumb_key
+            ? "/api/objects/thumb-download-url?thumb_key=" + encodeURIComponent(p.thumb_key)
+            : null,
+        }));
+        pagesViewTitle.value = doc.title || "Document";
+        pagesViewDocId.value = doc.id;
+        pagesViewOpen.value = true;
       } catch (e) { console.error(e); }
     };
 
@@ -1242,7 +1452,7 @@ createApp({
       viewerPages, viewerPageIndex,
       onViewerImgLoad, onViewerPointerDown, onViewerPointerMove, onViewerPointerUp,
       viewerPrev, viewerNext, closeViewer,
-      pagesViewOpen, pagesViewTitle, pagesViewList, pagesViewDocId, closePagesView, openViewerFromPages, deletePage,
+      pagesViewOpen, pagesViewTitle, pagesViewList, pagesViewDocId, closePagesView, openViewerFromPages, openPagesView, deletePage, movePageUp, movePageDown,
       menuKey, tagToColors, refreshAll, setActiveTag, clearActiveTag,
       handleFileUpload, deleteDocument, isImage, isPdf, viewDocument,
       getExt, getExtIcon, closeTagsModal, editTags, downloadPage, logout,

@@ -720,6 +720,31 @@ app.delete("/api/documents/:id{[^/]+}/pages", async (c) => {
   }
 });
 
+// ── PUT /api/documents/:id/page-order ──
+// Body: { keys: ["key1","key2",...] } — full ordered list of page keys
+app.put("/api/documents/:id{[^/]+}/page-order", async (c) => {
+  const docId = c.req.param("id");
+  const db = c.env.DB;
+  if (!db) return c.json({ error: "DB not configured" }, 500);
+
+  const body = await c.req.json().catch(() => null);
+  if (!Array.isArray(body?.keys) || body.keys.length === 0) {
+    return c.json({ error: "keys array required" }, 400);
+  }
+
+  try {
+    await ensureSchema(db);
+    const stmts = body.keys.map((key, i) =>
+      db.prepare("UPDATE objects SET page_number=? WHERE key=? AND document_id=?")
+        .bind(i + 1, key, docId),
+    );
+    await db.batch(stmts);
+    return c.json({ success: true });
+  } catch (err) {
+    return c.json({ error: err?.message || String(err) }, 500);
+  }
+});
+
 // ── GET /api/documents/:id/pdf-settings ──
 app.get("/api/documents/:id{[^/]+}/pdf-settings", async (c) => {
   const docId = c.req.param("id");
