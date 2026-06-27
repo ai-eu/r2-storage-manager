@@ -1028,6 +1028,8 @@ const fetchWorkersUsage = async (env) => {
   if (!accountId || !token) return null;
 
   const today = new Date().toISOString().slice(0, 10);
+  const startOfDay = `${today}T00:00:00.000Z`;
+  const endOfDay = `${today}T23:59:59.999Z`;
 
   const resp = await fetch("https://api.cloudflare.com/client/v4/graphql", {
     method: "POST",
@@ -1040,9 +1042,10 @@ const fetchWorkersUsage = async (env) => {
         viewer {
           accounts(filter: { accountTag: "${accountId}" }) {
             workersInvocationsAdaptive(
-              filter: { date_geq: "${today}", date_leq: "${today}" }
-              limit: 100
+              filter: { datetime_geq: "${startOfDay}", datetime_leq: "${endOfDay}" }
+              limit: 10000
             ) {
+              dimensions { datetime }
               sum { requests }
             }
           }
@@ -1053,6 +1056,8 @@ const fetchWorkersUsage = async (env) => {
 
   if (!resp.ok) return null;
   const data = await resp.json();
+  if (data?.errors?.length) return null;
+
   const accounts = data?.data?.viewer?.accounts;
   if (!accounts || !accounts.length) return null;
 

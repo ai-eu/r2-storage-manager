@@ -42,7 +42,7 @@ Personal secure cloud storage for documents, photos, and sensitive files. Self-h
 ### Setup
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/r2-storage-manager.git
+git clone git@github.com:ai-eu/r2-storage-manager.git
 cd r2-storage-manager
 npm install
 npm run setup
