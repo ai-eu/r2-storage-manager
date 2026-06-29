@@ -36,10 +36,39 @@ Personal secure cloud storage for documents, photos, and sensitive files. Self-h
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org/) 18+
 - Free [Cloudflare account](https://dash.cloudflare.com/sign-up)
+- For local setup only: [Node.js](https://nodejs.org/) 18+
 
-### Setup
+### Create R2 API Token
+
+Before deploying, create an R2 API token in the Cloudflare dashboard:
+
+1. Go to [Cloudflare Dashboard](https://dash.cloudflare.com/) → R2 Object Storage → **Manage R2 API Tokens**
+2. Click **Create API token**
+3. Permissions: **Object Read & Write**
+4. Specify bucket: **r2-storage**
+5. Copy the **Access Key ID** and **Secret Access Key**
+
+### Option A: Deploy with GitHub Actions (recommended)
+
+No Node.js, no terminal, no local install. Fork the repo and run the workflow.
+
+1. Click **Use this template** or fork this repository to your own GitHub account.
+2. In your fork, go to **Settings → Secrets and variables → Actions** and add:
+   - `CF_API_TOKEN` — a Cloudflare API token with these permissions:
+     - Account > Cloudflare Workers
+     - Account > R2
+     - Account > D1
+   - `R2_ACCESS_KEY_ID`
+   - `R2_SECRET_ACCESS_KEY`
+3. Go to **Actions → Deploy to Cloudflare** and click **Run workflow**.
+4. When the run finishes, copy the API key shown in the workflow logs.
+
+The workflow creates the R2 bucket, D1 database, initializes the schema, sets all Worker secrets, and deploys the app.
+
+Your app will be available at `https://r2-storage-manager.<your-subdomain>.workers.dev`.
+
+### Option B: Local setup
 
 ```bash
 git clone git@github.com:ai-eu/r2-storage-manager.git
@@ -53,18 +82,10 @@ The setup wizard will:
 2. Create an R2 bucket
 3. Create a D1 database
 4. Initialize the database schema (tables and indexes)
-5. Ask you to create an R2 API Token (manual step — see below)
+5. Ask for the R2 API Token keys you created above
 6. Set all secrets
 7. Generate an API key for web access
 8. Deploy the app automatically
-
-### Create R2 API Token (manual step)
-
-1. Go to [Cloudflare Dashboard](https://dash.cloudflare.com/) → R2 Object Storage → **Manage R2 API Tokens**
-2. Click **Create API token**
-3. Permissions: **Object Read & Write**
-4. Specify bucket: **r2-storage**
-5. Copy the **Access Key ID** and **Secret Access Key**
 
 ### Deploy
 
@@ -90,17 +111,21 @@ npm run dev
 
 ```
 r2-storage-manager/
-├── public/          # Frontend (served by Worker)
-│   ├── index.html   # Login page
-│   ├── app.html     # Main app
-│   ├── app.js       # Vue.js app logic
-│   └── style.css    # Styles
+├── .github/
+│   └── workflows/
+│       └── deploy.yml  # One-click GitHub Actions deploy
+├── public/             # Frontend (served by Worker)
+│   ├── index.html      # Login page
+│   ├── app.html        # Main app
+│   ├── app.js          # Vue.js app logic
+│   └── style.css       # Styles
 ├── src/
-│   └── worker.js    # Cloudflare Worker (API)
+│   └── worker.js       # Cloudflare Worker (API)
 ├── scripts/
-│   ├── setup.js     # Interactive setup wizard
-│   └── r2-cors.json # R2 bucket CORS configtesting setup)
-├── wrangler.toml    # Cloudflare config
+│   ├── setup.js        # Interactive setup wizard
+│   └── r2-cors.json    # R2 bucket CORS config
+├── schema.sql          # D1 database schema
+├── wrangler.toml       # Cloudflare config
 └── package.json
 ```
 
