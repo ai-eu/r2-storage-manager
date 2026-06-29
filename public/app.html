@@ -245,6 +245,32 @@
         Page {{ viewerPageIndex + 1 }} of {{ viewerPages.length }}
       </span>
     </div>
+
+    <!-- PDF viewer -->
+    <div v-if="pdfViewerOpen" class="pdf-viewer-overlay" @keydown="onPdfViewerKeydown">
+      <div class="pdf-viewer-header">
+        <div class="pdf-viewer-title">{{ pdfViewerName }}</div>
+        <div class="pdf-viewer-toolbar">
+          <button @click="pdfViewerZoomOut" class="pdf-viewer-zoom-btn" title="Zoom out">−</button>
+          <span class="pdf-viewer-zoom-val">{{ Math.round(pdfViewerScale * 100) }}%</span>
+          <button @click="pdfViewerZoomIn" class="pdf-viewer-zoom-btn" title="Zoom in">+</button>
+          <button @click="pdfViewerZoomReset" class="pdf-viewer-zoom-btn" title="Reset zoom">1:1</button>
+          <button @click="closePdfViewer" class="viewer-close-btn">Close</button>
+        </div>
+      </div>
+      <div class="pdf-viewer-body">
+        <div v-if="pdfViewerLoading" class="pdf-viewer-loading">Loading PDF…</div>
+        <div v-else-if="pdfViewerError" class="pdf-viewer-error">{{ pdfViewerError }}</div>
+        <div v-else class="pdf-viewer-scroll">
+          <canvas
+            v-for="n in pdfViewerPageCount"
+            :key="n"
+            :ref="(el) => pdfViewerSetCanvas(el, n)"
+            class="pdf-viewer-page">
+          </canvas>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>

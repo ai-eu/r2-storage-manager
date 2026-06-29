@@ -666,6 +666,108 @@ createApp({
       else if (e.key === "Escape") closeViewer();
     };
 
+    // PDF viewer (inline, so it stays inside the WebView and keeps auth cookies)
+    const pdfViewerOpen = ref(false);
+    const pdfViewerName = ref("");
+    const pdfViewerLoading = ref(false);
+    const pdfViewerError = ref("");
+    const pdfViewerPageCount = ref(0);
+    const pdfViewerScale = ref(1.5);
+    const pdfViewerCanvases = ref([]);
+    let pdfViewerDoc = null;
+    let pdfViewerObjectUrl = null;
+
+    const closePdfViewer = () => {
+      pdfViewerOpen.value = false;
+      pdfViewerName.value = "";
+      pdfViewerPageCount.value = 0;
+      pdfViewerError.value = "";
+      pdfViewerLoading.value = false;
+      pdfViewerCanvases.value = [];
+      if (pdfViewerDoc) {
+        try { pdfViewerDoc.destroy(); } catch {}
+        pdfViewerDoc = null;
+      }
+      if (pdfViewerObjectUrl) {
+        URL.revokeObjectURL(pdfViewerObjectUrl);
+        pdfViewerObjectUrl = null;
+      }
+    };
+
+    const pdfViewerSetCanvas = (el, n) => {
+      if (el) pdfViewerCanvases.value[n - 1] = el;
+    };
+
+    const pdfViewerZoomIn = () => {
+      pdfViewerScale.value = Math.min(3, pdfViewerScale.value + 0.25);
+      renderPdfViewerPages();
+    };
+    const pdfViewerZoomOut = () => {
+      pdfViewerScale.value = Math.max(0.5, pdfViewerScale.value - 0.25);
+      renderPdfViewerPages();
+    };
+    const pdfViewerZoomReset = () => {
+      pdfViewerScale.value = 1.5;
+      renderPdfViewerPages();
+    };
+
+    const renderPdfViewerPages = async () => {
+      if (!pdfViewerDoc || !pdfViewerCanvases.value.length) return;
+      for (let i = 1; i <= pdfViewerDoc.numPages; i++) {
+        const canvas = pdfViewerCanvases.value[i - 1];
+        if (!canvas) continue;
+        try {
+          const page = await pdfViewerDoc.getPage(i);
+          const viewport = page.getViewport({ scale: pdfViewerScale.value });
+          const ratio = window.devicePixelRatio || 1;
+          canvas.width = Math.floor(viewport.width * ratio);
+          canvas.height = Math.floor(viewport.height * ratio);
+          canvas.style.width = Math.floor(viewport.width) + "px";
+          canvas.style.height = Math.floor(viewport.height) + "px";
+          const ctx = canvas.getContext("2d");
+          ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+          await page.render({ canvasContext: ctx, viewport }).promise;
+        } catch (e) {
+          console.error("pdf viewer render page failed", i, e);
+        }
+      }
+    };
+
+    const openPdfViewer = async (url, name) => {
+      if (typeof pdfjsLib === "undefined") {
+        pdfViewerError.value = "PDF viewer library is not loaded.";
+        pdfViewerOpen.value = true;
+        return;
+      }
+      closePdfViewer();
+      pdfViewerOpen.value = true;
+      pdfViewerLoading.value = true;
+      pdfViewerName.value = name || "Document";
+      try {
+        const resp = await apiFetch(url);
+        const blob = await resp.blob();
+        pdfViewerObjectUrl = URL.createObjectURL(blob);
+        const task = pdfjsLib.getDocument(pdfViewerObjectUrl);
+        pdfViewerDoc = await task.promise;
+        pdfViewerPageCount.value = pdfViewerDoc.numPages;
+        pdfViewerLoading.value = false;
+        await nextTick();
+        await renderPdfViewerPages();
+      } catch (e) {
+        console.error("pdf viewer open failed", e);
+        pdfViewerError.value = "Could not open PDF: " + (e?.message || String(e));
+        pdfViewerLoading.value = false;
+      }
+    };
+
+    const onPdfViewerKeydown = (e) => {
+      if (!pdfViewerOpen.value) return;
+      if (e.key === "Escape") closePdfViewer();
+      else if (e.key === "+" || e.key === "=") pdfViewerZoomIn();
+      else if (e.key === "-") pdfViewerZoomOut();
+      else if (e.key === "0") pdfViewerZoomReset();
+    };
+
     // Auth
     const logout = () => {
       fetch("/api/logout", { method: "POST" }).finally(() => { window.location.href = "/"; });
@@ -1292,10 +1394,11 @@ createApp({
     // Document actions
     const viewDocument = async (doc) => {
       try {
-        // If document has a PDF — always open it directly
+        // If document has a PDF — open it inline so the WebView keeps the auth cookie
         if (doc.pdf_key) {
           const url = "/api/objects/download-url?key=" + encodeURIComponent(doc.pdf_key);
-          window.open(url, "_blank");
+          const name = doc.title || doc.pdf_key.split("/").pop() || "Document";
+          await openPdfViewer(url, name);
           return;
         }
         // Fallback for non-PDF documents
@@ -1329,7 +1432,7 @@ createApp({
       pagesViewDocId.value = null;
     };
 
-    const openViewerFromPages = (pageIndex) => {
+    const openViewerFromPages = async (pageIndex) => {
       const page = pagesViewList.value[pageIndex];
       if (!page) return;
       const name = page.filename || page.key || "";
@@ -1338,6 +1441,8 @@ createApp({
       );
       if (isImage(name)) {
         openViewer(urls[pageIndex], name, urls, pageIndex);
+      } else if (isPdf(name)) {
+        await openPdfViewer(urls[pageIndex], name);
       } else {
         window.open(urls[pageIndex], "_blank");
       }
@@ -1520,6 +1625,7 @@ createApp({
       fetchAllTags();
       fetchUsage();
       window.addEventListener("keydown", onViewerKeydown);
+      window.addEventListener("keydown", onPdfViewerKeydown);
     });
 
     return {
@@ -1530,6 +1636,9 @@ createApp({
       viewerPages, viewerPageIndex,
       onViewerImgLoad, onViewerPointerDown, onViewerPointerMove, onViewerPointerUp,
       viewerPrev, viewerNext, closeViewer,
+      pdfViewerOpen, pdfViewerName, pdfViewerLoading, pdfViewerError,
+      pdfViewerPageCount, pdfViewerScale, pdfViewerSetCanvas,
+      openPdfViewer, closePdfViewer, pdfViewerZoomIn, pdfViewerZoomOut, pdfViewerZoomReset,
       pagesViewOpen, pagesViewTitle, pagesViewList, pagesViewDocId, closePagesView, openViewerFromPages, openPagesView, deletePage, movePageUp, movePageDown,
       menuKey, tagToColors, refreshAll, setActiveTag, clearActiveTag,
       handleFileUpload, deleteDocument, isImage, isPdf, viewDocument,
