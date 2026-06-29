@@ -43,6 +43,33 @@ const tagToColors = (tag) => {
 const isImage = (f) => /\.(jpg|jpeg|png|gif|webp)$/i.test(f);
 const isPdf = (f) => /\.pdf$/i.test(f);
 
+const getMenuItems = (doc) => {
+  const items = [];
+  
+  // Tags - всегда доступно
+  items.push({ action: 'editTags', title: 'Tags' });
+  
+  // Add pages - только для PDF с несколькими страницами
+  if (isPdf(doc.title || doc.id) && doc.page_count > 1) {
+    items.push({ action: 'addPages', title: 'Add pages' });
+  }
+  
+  // Edit pages - только для PDF с несколькими страницами
+  if (isPdf(doc.title || doc.id) && doc.page_count > 1) {
+    items.push({ action: 'editPages', title: 'Edit pages' });
+  }
+  
+  // Re-process PDF - только для PDF или изображений
+  if (isPdf(doc.title || doc.id) || isImage(doc.title || doc.id)) {
+    items.push({ action: 'regeneratePdf', title: 'Re-process PDF' });
+  }
+  
+  // Delete - всегда доступно
+  items.push({ action: 'delete', title: 'Delete' });
+  
+  return items;
+};
+
 if (typeof pdfjsLib !== "undefined") {
   pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 }
@@ -276,6 +303,57 @@ createApp({
     const formatNum = (n) => {
       if (typeof n !== "number") return "0";
       return n.toLocaleString("en-US");
+    };
+
+    // Menu functions
+    const getMenuItems = (doc) => {
+      const items = [];
+      const filename = doc.title || doc.id;
+      
+      // Tags - всегда доступно
+      items.push({ action: 'editTags', title: 'Tags' });
+      
+      // Если это НЕ изображение и НЕ PDF - показываем только Tags и Delete
+      if (!isImage(filename) && !isPdf(filename)) {
+        items.push({ action: 'delete', title: 'Delete' });
+        return items;
+      }
+      
+      // Для изображений и PDF - полное меню из 5 пунктов как было раньше
+      
+      // Add pages - всегда доступно в полном меню
+      items.push({ action: 'addPages', title: 'Add pages' });
+      
+      // Edit pages - всегда доступно в полном меню  
+      items.push({ action: 'editPages', title: 'Edit pages' });
+      
+      // Re-process PDF - всегда доступно в полном меню
+      items.push({ action: 'regeneratePdf', title: 'Re-process PDF' });
+      
+      // Delete
+      items.push({ action: 'delete', title: 'Delete' });
+      
+      return items;
+    };
+
+    const handleMenuAction = (action, doc) => {
+      switch (action) {
+        case 'editTags':
+          editTags(doc);
+          break;
+        case 'addPages':
+          triggerAddPages(doc.id);
+          break;
+        case 'editPages':
+          openPagesView(doc);
+          break;
+        case 'regeneratePdf':
+          regeneratePdf(doc);
+          break;
+        case 'delete':
+          deleteDocument(doc);
+          break;
+      }
     };
     const fetchUsage = async () => {
       try {
@@ -1456,6 +1534,7 @@ createApp({
       menuKey, tagToColors, refreshAll, setActiveTag, clearActiveTag,
       handleFileUpload, deleteDocument, isImage, isPdf, viewDocument,
       getExt, getExtIcon, closeTagsModal, editTags, downloadPage, logout,
+      getMenuItems, handleMenuAction,
       isDragOver, onDragOver, onDragEnter, onDragLeave, onDrop,
       triggerAddPages, handleAddPagesInput,
       usage, usagePct, formatNum,
