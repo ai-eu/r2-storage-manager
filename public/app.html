@@ -33,7 +33,7 @@
       </div>
 
       <div class="sidebar-bottom">
-        <div v-if="usage" class="usage-widget">
+        <div v-if="usage" class="usage-widget usage-widget-sidebar">
           <div class="usage-title">Workers requests</div>
           <div class="usage-bar">
             <div class="usage-bar-fill" :style="{width: usagePct + '%'}"></div>
@@ -45,7 +45,7 @@
             {{ formatNum(usage.remaining) }} left today
           </div>
         </div>
-        <button @click="logout" class="btn-secondary">Log out</button>
+        <button @click="logout" class="btn-secondary btn-logout-sidebar">Log out</button>
       </div>
     </aside>
 
@@ -63,7 +63,8 @@
         <div v-if="loading" class="loading-state"><span>Loading...</span></div>
         <div v-else-if="documents.length===0" class="empty-state"><span>No documents</span></div>
         <div v-else class="files-grid">
-          <div v-for="doc in documents" :key="doc.id" class="file-card">
+          <div v-for="doc in documents" :key="doc.id" class="file-card"
+            :class="{'file-card--active': menuKey === doc.id}">
             <div class="file-card-thumb" @click="viewDocument(doc)">
               <img v-if="doc.thumb_url" :src="doc.thumb_url" />
               <span v-else class="ext-icon">{{ getExtIcon(getExt(doc.title||doc.id)) }}</span>
@@ -103,6 +104,22 @@
         </div>
         <div v-if="uploading" class="upload-progress">Uploading: {{ uploadProgress }}%</div>
         <div v-if="uploadError" class="upload-error">{{ uploadError }}</div>
+      </div>
+
+      <div class="main-bottom">
+        <div v-if="usage" class="usage-widget usage-widget-main">
+          <div class="usage-title">Workers requests</div>
+          <div class="usage-bar">
+            <div class="usage-bar-fill" :style="{width: usagePct + '%'}"></div>
+          </div>
+          <div class="usage-text">
+            {{ formatNum(usage.used) }} / {{ formatNum(usage.limit) }}
+          </div>
+          <div class="usage-remaining" :class="{'usage-warn': usagePct > 80}">
+            {{ formatNum(usage.remaining) }} left today
+          </div>
+        </div>
+        <button @click="logout" class="btn-secondary btn-logout-main">Log out</button>
       </div>
     </main>
 
