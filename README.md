@@ -73,6 +73,8 @@ The workflow creates the R2 bucket, D1 database, initializes the schema, sets al
 
 Your app will be available at `https://r2-storage-manager.<your-subdomain>.workers.dev`.
 
+**Updating (Option A):** sync your fork with the upstream repository (GitHub UI → **Sync fork**, or `git pull upstream main` if you have a local clone), then re-run the **Deploy to Cloudflare** workflow. The workflow is idempotent — existing buckets, databases, and secrets are reused, and the schema re-applies safely (`CREATE ... IF NOT EXISTS`).
+
 ### Option B: Local setup
 
 ```bash
