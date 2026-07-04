@@ -15,6 +15,8 @@ import {
   deleteDocument as deleteDocumentApi,
   editTags as editTagsApi,
 } from "./modules/api/documents.js";
+import { useImageViewer } from "./modules/composables/useImageViewer.js";
+import { usePdfViewer } from "./modules/composables/usePdfViewer.js";
 
 if (typeof pdfjsLib !== "undefined") {
   pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
@@ -291,329 +293,44 @@ createApp({
       if (r) r(result);
     };
 
-    // Image viewer
-    const viewerOpen = ref(false);
-    const viewerUrl = ref("");
-    const viewerName = ref("");
-    const viewerPages = ref([]);
-    const viewerPageIndex = ref(0);
-    const viewerStage = ref(null);
-    const viewerImg = ref(null);
-    const viewerScale = ref(1);
-    const viewerTx = ref(0);
-    const viewerTy = ref(0);
-    const viewerBaseW = ref(0);
-    const viewerBaseH = ref(0);
-    const viewerPointers = new Map();
-    let viewerPinchStart = null;
-    let viewerDragLast = null;
-
-    const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
-    const clampViewerTranslate = () => {
-      const s = viewerStage.value;
-      if (!s) return;
-      const sr = s.getBoundingClientRect();
-      const sw = viewerBaseW.value * viewerScale.value;
-      const sh = viewerBaseH.value * viewerScale.value;
-      const mx = Math.max(0, (sw - sr.width) / 2);
-      const my = Math.max(0, (sh - sr.height) / 2);
-      viewerTx.value = clamp(viewerTx.value, -mx, mx);
-      viewerTy.value = clamp(viewerTy.value, -my, my);
-    };
-    const resetViewerTransform = () => {
-      viewerScale.value = 1; viewerTx.value = 0; viewerTy.value = 0;
-      viewerPinchStart = null; viewerDragLast = null; viewerPointers.clear();
-    };
-    const viewerZoomIn = () => {
-      viewerScale.value = Math.min(5, viewerScale.value + 0.5);
-      clampViewerTranslate();
-    };
-    const viewerZoomOut = () => {
-      viewerScale.value = Math.max(1, viewerScale.value - 0.5);
-      if (viewerScale.value === 1) { viewerTx.value = 0; viewerTy.value = 0; }
-      clampViewerTranslate();
-    };
-    const viewerZoomReset = () => {
-      resetViewerTransform();
-    };
-    const onViewerImgLoad = async () => {
-      await nextTick();
-      const r = viewerImg.value?.getBoundingClientRect();
-      if (r) { viewerBaseW.value = r.width; viewerBaseH.value = r.height; }
-      resetViewerTransform();
-    };
-    const viewerImgStyle = computed(() => ({
-      transform: `translate3d(${viewerTx.value}px,${viewerTy.value}px,0) scale(${viewerScale.value})`,
-      transformOrigin: "center center", willChange: "transform",
-    }));
-    const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
-    const mid = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
-
-    const onViewerPointerDown = (e) => {
-      if (!viewerOpen.value) return;
-      try { e.currentTarget?.setPointerCapture?.(e.pointerId); } catch {}
-      viewerPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      if (viewerPointers.size === 2) {
-        const [p1, p2] = Array.from(viewerPointers.values());
-        viewerPinchStart = { dist: dist(p1, p2) || 1, mid: mid(p1, p2), scale: viewerScale.value, tx: viewerTx.value, ty: viewerTy.value };
-        viewerDragLast = null; return;
-      }
-      if (viewerPointers.size === 1) viewerDragLast = { x: e.clientX, y: e.clientY };
-    };
-    const onViewerPointerMove = (e) => {
-      if (!viewerOpen.value || !viewerPointers.has(e.pointerId)) return;
-      viewerPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      if (viewerPointers.size === 2 && viewerPinchStart) {
-        try { e.preventDefault(); } catch {}
-        const [p1, p2] = Array.from(viewerPointers.values());
-        const d = dist(p1, p2) || 1, m = mid(p1, p2);
-        viewerScale.value = clamp(viewerPinchStart.scale * (d / viewerPinchStart.dist), 1, 5);
-        viewerTx.value = viewerPinchStart.tx + (m.x - viewerPinchStart.mid.x);
-        viewerTy.value = viewerPinchStart.ty + (m.y - viewerPinchStart.mid.y);
-        clampViewerTranslate(); return;
-      }
-      if (viewerPointers.size === 1 && viewerDragLast && viewerScale.value > 1) {
-        try { e.preventDefault(); } catch {}
-        viewerTx.value += e.clientX - viewerDragLast.x;
-        viewerTy.value += e.clientY - viewerDragLast.y;
-        viewerDragLast = { x: e.clientX, y: e.clientY };
-        clampViewerTranslate();
-      }
-    };
-    const onViewerPointerUp = (e) => {
-      if (!viewerPointers.has(e.pointerId)) return;
-      viewerPointers.delete(e.pointerId);
-      if (viewerPointers.size < 2) viewerPinchStart = null;
-      if (viewerPointers.size === 0) viewerDragLast = null;
-    };
-    let savedScrollY = 0;
-    let savedScrollX = 0;
-    const lockBodyScroll = () => {
-      savedScrollX = window.scrollX;
-      savedScrollY = window.scrollY;
-      document.body.style.position = 'fixed';
-      document.body.style.top = -savedScrollY + 'px';
-      document.body.style.left = -savedScrollX + 'px';
-      document.body.style.width = '100%';
-      document.body.style.overflow = 'hidden';
-    };
-    const unlockBodyScroll = () => {
-      document.body.style.position = '';
-      document.body.style.top = '';
-      document.body.style.left = '';
-      document.body.style.width = '';
-      document.body.style.overflow = '';
-      window.scrollTo(savedScrollX, savedScrollY);
-    };
-    const openViewer = async (url, name, pages, startIndex) => {
-      viewerUrl.value = url || ""; viewerName.value = name || "";
-      viewerPages.value = Array.isArray(pages) ? pages : [];
-      viewerPageIndex.value = startIndex || 0;
-      viewerOpen.value = true; resetViewerTransform(); lockBodyScroll(); await nextTick();
-    };
-    const downloadCurrentImage = () => {
-      if (viewerUrl.value) downloadBlob(viewerUrl.value, viewerName.value || "image");
-    };
-    const closeViewer = () => {
-      viewerOpen.value = false; viewerUrl.value = ""; viewerName.value = "";
-      viewerPages.value = []; viewerPageIndex.value = 0;
-      resetViewerTransform(); unlockBodyScroll();
-    };
-    const viewerPrev = () => {
-      if (viewerPageIndex.value > 0) {
-        viewerPageIndex.value--;
-        viewerUrl.value = viewerPages.value[viewerPageIndex.value];
-        resetViewerTransform();
-      }
-    };
-    const viewerNext = () => {
-      if (viewerPageIndex.value < viewerPages.value.length - 1) {
-        viewerPageIndex.value++;
-        viewerUrl.value = viewerPages.value[viewerPageIndex.value];
-        resetViewerTransform();
-      }
-    };
-    const onViewerKeydown = (e) => {
-      if (!viewerOpen.value) return;
-      if (e.key === "ArrowLeft") viewerPrev();
-      else if (e.key === "ArrowRight") viewerNext();
-      else if (e.key === "Escape") closeViewer();
-    };
-
-    // PDF viewer (inline, so it stays inside the WebView and keeps auth cookies)
-    const pdfViewerOpen = ref(false);
-    const pdfViewerName = ref("");
-    const pdfViewerLoading = ref(false);
-    const pdfViewerError = ref("");
-    const pdfViewerPageCount = ref(0);
-    const pdfViewerScale = ref(1);
-    let pdfViewerFitScale = 1;
-    const pdfViewerCanvases = ref([]);
-    const pdfViewerScroll = ref(null);
-    let pdfViewerDoc = null;
-    let pdfViewerObjectUrl = null;
-    let pdfViewerDownloadUrl = "";
-    const pdfViewerPointers = new Map();
-    let pdfViewerPinchStart = null;
-    let pdfViewerDragStart = null;
-
-    const closePdfViewer = () => {
-      pdfViewerOpen.value = false;
-      pdfViewerName.value = "";
-      pdfViewerPageCount.value = 0;
-      pdfViewerError.value = "";
-      pdfViewerLoading.value = false;
-      pdfViewerCanvases.value = [];
-      pdfViewerDownloadUrl = "";
-      unlockBodyScroll();
-      if (pdfViewerDoc) {
-        try { pdfViewerDoc.destroy(); } catch {}
-        pdfViewerDoc = null;
-      }
-      if (pdfViewerObjectUrl) {
-        URL.revokeObjectURL(pdfViewerObjectUrl);
-        pdfViewerObjectUrl = null;
-      }
-    };
-
-    const downloadCurrentPdf = () => {
-      if (pdfViewerDownloadUrl) downloadBlob(pdfViewerDownloadUrl, pdfViewerName.value || "document.pdf");
-    };
-
-    const pdfViewerSetCanvas = (el, n) => {
-      if (el) pdfViewerCanvases.value[n - 1] = el;
-    };
-
-    const pdfViewerZoomIn = () => {
-      pdfViewerScale.value = Math.min(3, pdfViewerScale.value + 0.25);
-      renderPdfViewerPages();
-    };
-    const pdfViewerZoomOut = () => {
-      pdfViewerScale.value = Math.max(0.5, pdfViewerScale.value - 0.25);
-      renderPdfViewerPages();
-    };
-    const pdfViewerZoomReset = () => {
-      pdfViewerScale.value = pdfViewerFitScale;
-      renderPdfViewerPages();
-    };
-
-    const renderPdfViewerPages = async () => {
-      if (!pdfViewerDoc || !pdfViewerCanvases.value.length) return;
-      for (let i = 1; i <= pdfViewerDoc.numPages; i++) {
-        const canvas = pdfViewerCanvases.value[i - 1];
-        if (!canvas) continue;
-        try {
-          const page = await pdfViewerDoc.getPage(i);
-          const viewport = page.getViewport({ scale: pdfViewerScale.value });
-          const ratio = window.devicePixelRatio || 1;
-          canvas.width = Math.floor(viewport.width * ratio);
-          canvas.height = Math.floor(viewport.height * ratio);
-          canvas.style.width = Math.floor(viewport.width) + "px";
-          canvas.style.height = Math.floor(viewport.height) + "px";
-          const ctx = canvas.getContext("2d");
-          ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-          await page.render({ canvasContext: ctx, viewport }).promise;
-        } catch (e) {
-          console.error("pdf viewer render page failed", i, e);
-        }
-      }
-    };
-
-    const openPdfViewer = async (url, name) => {
-      if (typeof pdfjsLib === "undefined") {
-        pdfViewerError.value = "PDF viewer library is not loaded.";
-        pdfViewerOpen.value = true;
-        return;
-      }
-      closePdfViewer();
-      pdfViewerOpen.value = true;
-      pdfViewerLoading.value = true;
-      pdfViewerName.value = name || "Document";
-      pdfViewerDownloadUrl = url;
-      lockBodyScroll();
+    // downloadBlob — needed by viewer composables (defined early)
+    const downloadBlob = async (url, filename) => {
       try {
         const resp = await apiFetch(url);
         const blob = await resp.blob();
-        pdfViewerObjectUrl = URL.createObjectURL(blob);
-        const task = pdfjsLib.getDocument(pdfViewerObjectUrl);
-        pdfViewerDoc = await task.promise;
-        pdfViewerPageCount.value = pdfViewerDoc.numPages;
-        pdfViewerLoading.value = false;
-        await nextTick();
-        const container = pdfViewerScroll.value;
-        if (container && pdfViewerDoc.numPages > 0) {
-          const page0 = await pdfViewerDoc.getPage(1);
-          const vp = page0.getViewport({ scale: 1 });
-          const pad = 48;
-          pdfViewerFitScale = Math.max(0.5, Math.min((container.clientWidth - pad) / vp.width, 2));
-        } else {
-          pdfViewerFitScale = 1;
-        }
-        pdfViewerScale.value = pdfViewerFitScale;
-        await renderPdfViewerPages();
-      } catch (e) {
-        console.error("pdf viewer open failed", e);
-        pdfViewerError.value = "Could not open PDF: " + (e?.message || String(e));
-        pdfViewerLoading.value = false;
-      }
+        const objUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = objUrl; a.download = filename || "download";
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(objUrl), 1000);
+      } catch (e) { console.error(e); }
     };
 
-    const onPdfViewerKeydown = (e) => {
-      if (!pdfViewerOpen.value) return;
-      if (e.key === "Escape") closePdfViewer();
-      else if (e.key === "+" || e.key === "=") pdfViewerZoomIn();
-      else if (e.key === "-") pdfViewerZoomOut();
-      else if (e.key === "0") pdfViewerZoomReset();
-    };
+    // Image viewer (composable)
+    const {
+      viewerOpen, viewerUrl, viewerName, viewerStage, viewerImg, viewerImgStyle,
+      viewerPages, viewerPageIndex,
+      onViewerImgLoad, onViewerPointerDown, onViewerPointerMove, onViewerPointerUp,
+      viewerPrev, viewerNext, closeViewer, viewerZoomIn, viewerZoomOut, viewerZoomReset,
+      downloadCurrentImage, openViewer, onViewerKeydown,
+      lockBodyScroll, unlockBodyScroll,
+    } = useImageViewer({ downloadBlob });
 
-    const pdfViewerDist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
-
-    const onPdfViewerPointerDown = (e) => {
-      if (!pdfViewerOpen.value) return;
-      try { e.currentTarget?.setPointerCapture?.(e.pointerId); } catch {}
-      pdfViewerPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      if (pdfViewerPointers.size === 2) {
-        const [p1, p2] = Array.from(pdfViewerPointers.values());
-        pdfViewerPinchStart = { dist: pdfViewerDist(p1, p2) || 1, scale: pdfViewerScale.value };
-        pdfViewerDragStart = null;
-      } else if (pdfViewerPointers.size === 1 && pdfViewerScale.value > 1) {
-        const container = pdfViewerScroll.value;
-        pdfViewerDragStart = container
-          ? { x: e.clientX, y: e.clientY, scrollLeft: container.scrollLeft, scrollTop: container.scrollTop }
-          : { x: e.clientX, y: e.clientY, scrollLeft: 0, scrollTop: 0 };
-        pdfViewerPinchStart = null;
-      }
-    };
-
-    const onPdfViewerPointerMove = (e) => {
-      if (!pdfViewerOpen.value || !pdfViewerPointers.has(e.pointerId)) return;
-      pdfViewerPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      if (pdfViewerPointers.size === 2 && pdfViewerPinchStart) {
-        try { e.preventDefault(); } catch {}
-        const [p1, p2] = Array.from(pdfViewerPointers.values());
-        const d = pdfViewerDist(p1, p2) || 1;
-        const newScale = Math.min(3, Math.max(0.5, pdfViewerPinchStart.scale * (d / pdfViewerPinchStart.dist)));
-        if (newScale !== pdfViewerScale.value) {
-          pdfViewerScale.value = Math.round(newScale * 100) / 100;
-          renderPdfViewerPages();
-        }
-        return;
-      }
-      if (pdfViewerPointers.size === 1 && pdfViewerDragStart && pdfViewerScale.value > 1) {
-        try { e.preventDefault(); } catch {}
-        const container = pdfViewerScroll.value;
-        if (!container) return;
-        container.scrollLeft = pdfViewerDragStart.scrollLeft - (e.clientX - pdfViewerDragStart.x);
-        container.scrollTop = pdfViewerDragStart.scrollTop - (e.clientY - pdfViewerDragStart.y);
-      }
-    };
-
-    const onPdfViewerPointerUp = (e) => {
-      if (!pdfViewerPointers.has(e.pointerId)) return;
-      pdfViewerPointers.delete(e.pointerId);
-      if (pdfViewerPointers.size < 2) pdfViewerPinchStart = null;
-      if (pdfViewerPointers.size === 0) pdfViewerDragStart = null;
-    };
+    // PDF viewer (composable) — shares body scroll lock with image viewer
+    const {
+      pdfViewerOpen, pdfViewerName, pdfViewerLoading, pdfViewerError,
+      pdfViewerPageCount, pdfViewerScale, pdfViewerScroll, pdfViewerSetCanvas,
+      openPdfViewer, closePdfViewer,
+      pdfViewerZoomIn, pdfViewerZoomOut, pdfViewerZoomReset,
+      downloadCurrentPdf,
+      onPdfViewerPointerDown, onPdfViewerPointerMove, onPdfViewerPointerUp,
+      onPdfViewerKeydown,
+    } = usePdfViewer({
+      apiFetch,
+      lockBodyScroll,
+      unlockBodyScroll,
+      downloadBlob,
+    });
 
     // Data fetching
     const fetchTopTags = async () => {
@@ -1358,18 +1075,6 @@ createApp({
         uploading.value = false;
         uploadProgress.value = 0;
       }
-    };
-
-    const downloadBlob = async (url, filename) => {
-      try {
-        const resp = await apiFetch(url);
-        const blob = await resp.blob();
-        const objUrl = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = objUrl; a.download = filename || "download";
-        document.body.appendChild(a); a.click(); document.body.removeChild(a);
-        setTimeout(() => URL.revokeObjectURL(objUrl), 1000);
-      } catch (e) { console.error(e); }
     };
 
     const downloadPage = async (page) => {
