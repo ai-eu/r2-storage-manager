@@ -40,11 +40,13 @@ createApp({
     const pagesViewList = ref([]);
     const pagesViewDocId = ref(null);
     const deployedAt = ref("");
-    const deployedAtLabel = computed(() =>
-      deployedAt.value
-        ? new Date(deployedAt.value).toLocaleString()
-        : "",
-    );
+    const deployedAtLabel = computed(() => {
+      if (!deployedAt.value) return "";
+      const d = new Date(deployedAt.value);
+      const months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+      const pad = (n) => String(n).padStart(2, "0");
+      return `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    });
 
     const usage = useUsage({ fetchUsageData });
     const pdfModal = usePdfModal({ decodeImageFile, autoProcessImageData, applySliderDeltas, autoPickQuality });
@@ -117,7 +119,7 @@ createApp({
         const r = await fetch("/api/auth/check");
         if (!r.ok) { window.location.href = "/"; return; }
       } catch { window.location.href = "/"; return; }
-      fetch("/deploy-info.json")
+      fetch(`/deploy-info.json?t=${Date.now()}`)
         .then((r) => (r.ok ? r.json() : null))
         .then((d) => { if (d && d.deployedAt) deployedAt.value = d.deployedAt; })
         .catch(() => {});

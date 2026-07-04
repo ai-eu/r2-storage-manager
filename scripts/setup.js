@@ -139,6 +139,14 @@ async function main() {
 
   // 6. Update wrangler.toml
   console.log("\n📝 Updating wrangler.toml...");
+  if (!fs.existsSync(TOML_PATH)) {
+    if (!fs.existsSync(TOML_EXAMPLE_PATH)) {
+      console.error("❌ wrangler.toml.example not found. Re-clone the repo or restore it.");
+      process.exit(1);
+    }
+    fs.copyFileSync(TOML_EXAMPLE_PATH, TOML_PATH);
+    console.log("   Created wrangler.toml from wrangler.toml.example");
+  }
   updateToml("account_id", accountId);
   updateToml("R2_ACCOUNT_ID", accountId);
   updateToml("database_id", dbId);

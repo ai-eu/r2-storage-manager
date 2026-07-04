@@ -3,3 +3,4 @@ node_modules/
 .dev.vars
 .vscode/
 public/deploy-info.json
+wrangler.toml

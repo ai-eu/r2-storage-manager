@@ -81,6 +81,7 @@ jobs:
         run: |
           ACCOUNT_ID="${{ steps.account.outputs.account_id }}"
           DATABASE_ID="${{ steps.database.outputs.database_id }}"
+          cp wrangler.toml.example wrangler.toml
           sed -i "s/^account_id = \".*\"/account_id = \"$ACCOUNT_ID\"/" wrangler.toml
           sed -i "s/^database_id = \".*\"/database_id = \"$DATABASE_ID\"/" wrangler.toml
           sed -i "s/^R2_ACCOUNT_ID = \".*\"/R2_ACCOUNT_ID = \"$ACCOUNT_ID\"/" wrangler.toml

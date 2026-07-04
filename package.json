@@ -9,6 +9,7 @@
     "predeploy": "node scripts/write-deploy-info.js",
     "deploy": "wrangler deploy",
     "setup": "node scripts/setup.js",
+    "update": "node scripts/update.js",
     "reset": "node scripts/reset.js",
     "migrate": "node scripts/migrate-documents.js"
   },
