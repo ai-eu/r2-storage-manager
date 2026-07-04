@@ -5,8 +5,16 @@ import { formatNum, formatBytes } from "./modules/utils/format.js";
 import { decodeImageFile, autoProcessImageData, applySliderDeltas, autoPickQuality } from "./modules/image/process.js";
 import { generateImageThumbBlob, generatePdfThumbBlob } from "./modules/image/thumb.js";
 import { renderPageBlob, addJpegBlobToPdf, renderPdfBlob } from "./modules/pdf/build.js";
-
-const API_BASE = "";
+import { apiFetch, logout } from "./modules/api/client.js";
+import { fetchUsage as fetchUsageData } from "./modules/api/usage.js";
+import {
+  fetchTopTags as fetchTopTagsData,
+  fetchAllTags as fetchAllTagsData,
+  fetchRelatedTags as fetchRelatedTagsData,
+  fetchDocuments as fetchDocumentsData,
+  deleteDocument as deleteDocumentApi,
+  editTags as editTagsApi,
+} from "./modules/api/documents.js";
 
 if (typeof pdfjsLib !== "undefined") {
   pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
@@ -90,10 +98,8 @@ createApp({
       }
     };
     const fetchUsage = async () => {
-      try {
-        const d = await apiFetch("/api/usage").then((r) => r.json());
-        usage.value = d;
-      } catch { usage.value = null; }
+      try { usage.value = await fetchUsageData(); }
+      catch { usage.value = null; }
     };
 
     // Pages view (multi-page document)
@@ -609,50 +615,26 @@ createApp({
       if (pdfViewerPointers.size === 0) pdfViewerDragStart = null;
     };
 
-    // Auth
-    const logout = () => {
-      fetch("/api/logout", { method: "POST" }).finally(() => { window.location.href = "/"; });
-    };
-
-    // API helper
-    const apiFetch = (url, opts) => {
-      return fetch(API_BASE + url, opts).then((r) => {
-        if (r.status === 401) { window.location.href = "/"; throw new Error("Unauthorized"); }
-        return r;
-      });
-    };
-
     // Data fetching
     const fetchTopTags = async () => {
-      try { const d = await apiFetch("/api/tags/top?limit=10").then((r) => r.json()); topTags.value = d.tags || []; }
+      try { topTags.value = await fetchTopTagsData(); }
       catch { topTags.value = []; }
     };
     const fetchAllTags = async () => {
-      try { const d = await apiFetch("/api/tags/all?limit=500").then((r) => r.json()); allTags.value = d.tags || []; }
+      try { allTags.value = await fetchAllTagsData(); }
       catch { allTags.value = []; }
     };
     const fetchRelatedTags = async (tag) => {
       const n = normalizeTag(tag);
       if (!n) { relatedTags.value = []; return; }
-      try {
-        const d = await apiFetch("/api/tags/related?tag=" + encodeURIComponent(n) + "&limit=10").then((r) => r.json());
-        relatedTags.value = d.tags || [];
-      } catch { relatedTags.value = []; }
+      try { relatedTags.value = await fetchRelatedTagsData(tag); }
+      catch { relatedTags.value = []; }
     };
 
     const fetchDocuments = async () => {
       loading.value = true;
       try {
-        const qs = activeTag.value ? "?tag=" + encodeURIComponent(activeTag.value) : "";
-        const data = await apiFetch("/api/documents" + qs).then((r) => r.json());
-        const docs = data.documents || [];
-        const withThumbs = docs.map((d) => ({
-          ...d,
-          thumb_url: d.thumb_key
-            ? "/api/objects/thumb-download-url?thumb_key=" + encodeURIComponent(d.thumb_key)
-            : null,
-        }));
-        documents.value = withThumbs;
+        documents.value = await fetchDocumentsData(activeTag.value);
       } catch (e) { console.error(e); }
       finally { loading.value = false; }
     };
@@ -1237,11 +1219,7 @@ createApp({
       const result = await openTagsModal({ title: "Edit tags", initialValue: initial });
       if (result === null) return;
       try {
-        await apiFetch("/api/documents/" + encodeURIComponent(doc.id) + "/tags", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ tags: parseTagsInput(result) }),
-        });
+        await editTagsApi(doc.id, result);
         await refreshAll();
       } catch (e) { console.error(e); }
     };
@@ -1404,7 +1382,7 @@ createApp({
       const id = typeof doc === "string" ? doc : doc?.id;
       if (!id || !confirm("Delete this document" + (doc?.page_count > 1 ? " with " + doc.page_count + " pages?" : "?"))) return;
       try {
-        await apiFetch("/api/documents/" + encodeURIComponent(id), { method: "DELETE" });
+        await deleteDocumentApi(id);
         await refreshAll();
       } catch (e) { console.error(e); }
     };
