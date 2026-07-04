@@ -93,6 +93,8 @@ createApp({
       uploading, uploadProgress, uploadError,
       refreshAll: documents.refreshAll,
       refreshPagesView: pagesView.refreshPagesView,
+      activeTag: documents.activeTag,
+      setActiveTag: documents.setActiveTag,
       renderPageBlob, renderPdfBlob, addJpegBlobToPdf,
       generateImageThumbBlob, generatePdfThumbBlob,
       openPdfModal: pdfModal.openPdfModal,

@@ -10,6 +10,8 @@ import { ref } from "https://unpkg.com/vue@3/dist/vue.esm-browser.prod.js";
 //   uploadError           — shared ref<string>
 //   refreshAll            — top-level refresh callback
 //   refreshPagesView      — pages view refresh callback
+//   activeTag             — shared ref<string> of the currently active tag
+//   setActiveTag          — activates a tag (fetches its documents + related tags)
 //   renderPageBlob        — renders a processed page blob from a decoded list item
 //   renderPdfBlob         — builds a PDF blob from a list + settings
 //   addJpegBlobToPdf      — appends a JPEG blob to a jsPDF instance
@@ -26,6 +28,8 @@ export function useUpload({
   uploadError,
   refreshAll,
   refreshPagesView,
+  activeTag,
+  setActiveTag,
   renderPageBlob,
   renderPdfBlob,
   addJpegBlobToPdf,
@@ -42,6 +46,18 @@ export function useUpload({
   let dragCounter = 0;
 
   const genDocId = () => "doc_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
+
+  // After a new doc is registered, make its thumbnail visible. If no tag is
+  // currently active, activate the first assigned tag so the gallery shows the
+  // freshly uploaded file alongside other documents sharing that tag. Otherwise
+  // just refresh the current view.
+  const revealUploaded = async (tags) => {
+    if (!activeTag.value && tags && tags.length) {
+      await setActiveTag(tags[0]);
+    } else {
+      await refreshAll();
+    }
+  };
 
   // Upload one original file → returns R2 key.
   const uploadOriginal = async (file) => {
@@ -276,7 +292,7 @@ export function useUpload({
             body: JSON.stringify({ pdf_key: pdfKey, correction_settings: settings, thumb_key: pdfThumbKey || undefined, pages: pages.map((p, i) => ({ key: p.key, original_key: originalKeys[i] })) }),
           });
         }
-        await refreshAll();
+        await revealUploaded(tags);
       }
     } catch (e) {
       console.error("upload failed:", e);
@@ -332,7 +348,7 @@ export function useUpload({
           thumb_key: pageThumbKeys[0],
         }),
       });
-      await refreshAll();
+      await revealUploaded(tags);
     } catch (e) {
       uploadError.value = e?.message || "Upload failed.";
       for (const k of uploadedKeys) { try { await apiFetch("/api/objects/" + encodeURIComponent(k), { method: "DELETE" }); } catch {} }
