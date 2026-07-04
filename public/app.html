@@ -37,40 +37,24 @@
       <div class="sidebar-bottom">
         <div v-if="usage" class="usage-widget usage-compact">
           <div class="usage-row">
-            <div class="usage-row-head">
-              <span class="usage-row-label">Workers</span>
-              <span class="usage-row-val" :class="{'usage-warn': workersPct > 80}">
-                {{ formatNum(usage.workers.remaining) }} left
-              </span>
-            </div>
-            <div class="usage-bar">
-              <div class="usage-bar-fill" :style="{width: workersPct + '%'}"></div>
-            </div>
-            <div class="usage-row-foot">
+            <span class="usage-row-label">Workers</span>
+            <span class="usage-row-val" :class="{'usage-warn': workersPct > 80}">
               {{ formatNum(usage.workers.used) }} / {{ formatNum(usage.workers.limit) }}
-            </div>
+            </span>
           </div>
           <template v-if="usage.r2_storage">
             <div class="usage-row">
-              <div class="usage-row-head">
-                <span class="usage-row-label">R2 storage</span>
-                <span class="usage-row-val" :class="{'usage-warn': storagePct > 80}">
-                  {{ formatBytes(usage.r2_storage.remaining_bytes) }} free
-                </span>
-              </div>
-              <div class="usage-bar">
-                <div class="usage-bar-fill" :style="{width: storagePct + '%'}"></div>
-              </div>
-              <div class="usage-row-foot">
+              <span class="usage-row-label">R2 storage</span>
+              <span class="usage-row-val" :class="{'usage-warn': storagePct > 80}">
                 {{ formatBytes(usage.r2_storage.used_bytes) }} / {{ formatBytes(usage.r2_storage.limit_bytes) }} · {{ formatNum(usage.r2_storage.object_count) }} obj
-              </div>
+              </span>
             </div>
           </template>
           <template v-if="usage.r2_operations">
-            <div class="usage-row usage-row-ops">
+            <div class="usage-row">
               <span class="usage-row-label">R2 ops</span>
-              <span class="usage-row-foot">
-                A {{ formatNum(usage.r2_operations.class_a.used) }}/{{ formatNum(usage.r2_operations.class_a.limit) }} · B {{ formatNum(usage.r2_operations.class_b.used) }}/{{ formatNum(usage.r2_operations.class_b.limit) }}
+              <span class="usage-row-val">
+                A {{ formatNum(usage.r2_operations.class_a.used) }}/{{ formatCompact(usage.r2_operations.class_a.limit) }} · B {{ formatNum(usage.r2_operations.class_b.used) }}/{{ formatCompact(usage.r2_operations.class_b.limit) }}
               </span>
             </div>
           </template>
@@ -141,40 +125,24 @@
       <div class="main-bottom">
         <div v-if="usage" class="usage-widget usage-compact">
           <div class="usage-row">
-            <div class="usage-row-head">
-              <span class="usage-row-label">Workers</span>
-              <span class="usage-row-val" :class="{'usage-warn': workersPct > 80}">
-                {{ formatNum(usage.workers.remaining) }} left
-              </span>
-            </div>
-            <div class="usage-bar">
-              <div class="usage-bar-fill" :style="{width: workersPct + '%'}"></div>
-            </div>
-            <div class="usage-row-foot">
+            <span class="usage-row-label">Workers</span>
+            <span class="usage-row-val" :class="{'usage-warn': workersPct > 80}">
               {{ formatNum(usage.workers.used) }} / {{ formatNum(usage.workers.limit) }}
-            </div>
+            </span>
           </div>
           <template v-if="usage.r2_storage">
             <div class="usage-row">
-              <div class="usage-row-head">
-                <span class="usage-row-label">R2 storage</span>
-                <span class="usage-row-val" :class="{'usage-warn': storagePct > 80}">
-                  {{ formatBytes(usage.r2_storage.remaining_bytes) }} free
-                </span>
-              </div>
-              <div class="usage-bar">
-                <div class="usage-bar-fill" :style="{width: storagePct + '%'}"></div>
-              </div>
-              <div class="usage-row-foot">
+              <span class="usage-row-label">R2 storage</span>
+              <span class="usage-row-val" :class="{'usage-warn': storagePct > 80}">
                 {{ formatBytes(usage.r2_storage.used_bytes) }} / {{ formatBytes(usage.r2_storage.limit_bytes) }} · {{ formatNum(usage.r2_storage.object_count) }} obj
-              </div>
+              </span>
             </div>
           </template>
           <template v-if="usage.r2_operations">
-            <div class="usage-row usage-row-ops">
+            <div class="usage-row">
               <span class="usage-row-label">R2 ops</span>
-              <span class="usage-row-foot">
-                A {{ formatNum(usage.r2_operations.class_a.used) }}/{{ formatNum(usage.r2_operations.class_a.limit) }} · B {{ formatNum(usage.r2_operations.class_b.used) }}/{{ formatNum(usage.r2_operations.class_b.limit) }}
+              <span class="usage-row-val">
+                A {{ formatNum(usage.r2_operations.class_a.used) }}/{{ formatCompact(usage.r2_operations.class_a.limit) }} · B {{ formatNum(usage.r2_operations.class_b.used) }}/{{ formatCompact(usage.r2_operations.class_b.limit) }}
               </span>
             </div>
           </template>

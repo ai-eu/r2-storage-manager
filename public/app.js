@@ -1,7 +1,7 @@
 import { createApp, ref, onMounted } from "https://unpkg.com/vue@3/dist/vue.esm-browser.prod.js";
 import { normalizeTag, parseTagsInput, tagToColors } from "./modules/utils/tags.js";
 import { getExt, getExtIcon, isImage, isPdf } from "./modules/utils/files.js";
-import { formatNum, formatBytes } from "./modules/utils/format.js";
+import { formatNum, formatBytes, formatCompact } from "./modules/utils/format.js";
 import { decodeImageFile, autoProcessImageData, applySliderDeltas, autoPickQuality } from "./modules/image/process.js";
 import { generateImageThumbBlob, generatePdfThumbBlob } from "./modules/image/thumb.js";
 import { renderPageBlob, addJpegBlobToPdf, renderPdfBlob } from "./modules/pdf/build.js";
@@ -120,7 +120,7 @@ createApp({
       ...usage, ...pdfModal, ...tagsModal, ...imageViewer, ...pdfViewer,
       ...documents, ...pagesView, ...upload, ...docMenu,
       uploading, uploadProgress, uploadError,
-      tagToColors, formatNum, formatBytes,
+      tagToColors, formatNum, formatBytes, formatCompact,
       getExt, getExtIcon, isImage, isPdf, logout,
     };
   },
