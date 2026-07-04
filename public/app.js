@@ -1,47 +1,9 @@
 import { createApp, ref, computed, onMounted, nextTick } from "https://unpkg.com/vue@3/dist/vue.esm-browser.prod.js";
+import { normalizeTag, parseTagsInput, tagToColors } from "./modules/utils/tags.js";
+import { getExt, getExtIcon, isImage, isPdf } from "./modules/utils/files.js";
+import { formatNum, formatBytes } from "./modules/utils/format.js";
 
 const API_BASE = "";
-
-const normalizeTag = (t) => (typeof t === "string" ? t.trim().toLowerCase() : "");
-const normalizeTags = (tags) => {
-  if (!Array.isArray(tags)) return [];
-  return [...new Set(tags.map(normalizeTag).filter(Boolean))];
-};
-const parseTagsInput = (input) => {
-  if (typeof input !== "string") return [];
-  return normalizeTags(input.split(/[,\s]+/g).map((s) => s.trim()).filter(Boolean));
-};
-
-const getExt = (f) => {
-  if (typeof f !== "string") return "";
-  const b = f.split("/").pop() || f;
-  const i = b.lastIndexOf(".");
-  return i === -1 ? "" : b.slice(i + 1).toLowerCase();
-};
-const getExtIcon = (ext) => {
-  const m = { pdf:"PDF",doc:"DOC",docx:"DOCX",xls:"XLS",xlsx:"XLSX",ppt:"PPT",pptx:"PPTX",
-    txt:"TXT",md:"MD",zip:"ZIP",rar:"RAR","7z":"7Z",mp3:"MP3",wav:"WAV",mp4:"MP4",mov:"MOV" };
-  return m[ext] || (ext ? ext.toUpperCase() : "FILE");
-};
-
-const hashTag = (tag) => {
-  const s = normalizeTag(tag);
-  let h = 5381;
-  for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i));
-  return h >>> 0;
-};
-const tagToColors = (tag) => {
-  const p = [
-    {bg:"#2D6A4F",fg:"#FFF"},{bg:"#1D3557",fg:"#FFF"},{bg:"#6D597A",fg:"#FFF"},
-    {bg:"#9C6644",fg:"#FFF"},{bg:"#0077B6",fg:"#FFF"},{bg:"#E07A5F",fg:"#FFF"},
-    {bg:"#3D405B",fg:"#FFF"},{bg:"#2A9D8F",fg:"#FFF"},{bg:"#F4A261",fg:"#1B1B1B"},
-    {bg:"#8D99AE",fg:"#1B1B1B"},
-  ];
-  return p[hashTag(tag) % p.length];
-};
-
-const isImage = (f) => /\.(jpg|jpeg|png|gif|webp)$/i.test(f);
-const isPdf = (f) => /\.pdf$/i.test(f);
 
 if (typeof pdfjsLib !== "undefined") {
   pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
@@ -279,16 +241,6 @@ createApp({
       if (!s || !s.limit_bytes) return 0;
       return Math.min(100, Math.round((s.used_bytes / s.limit_bytes) * 100));
     });
-    const formatNum = (n) => {
-      if (typeof n !== "number") return "0";
-      return n.toLocaleString("en-US");
-    };
-    const formatBytes = (bytes) => {
-      if (!bytes || bytes === 0) return "0 B";
-      const units = ["B", "KB", "MB", "GB", "TB"];
-      const i = Math.floor(Math.log(bytes) / Math.log(1024));
-      return (bytes / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0) + " " + units[i];
-    };
 
     // Menu functions
     const getMenuItems = (doc) => {
