@@ -119,6 +119,7 @@ export const useImageViewer = ({ downloadBlob }) => {
     onViewerPointerDown: panZoom.onPointerDown,
     onViewerPointerMove: panZoom.onPointerMove,
     onViewerPointerUp: panZoom.onPointerUp,
+    onViewerWheel: panZoom.onWheel,
     viewerPrev, viewerNext, closeViewer,
     viewerZoomIn: panZoom.zoomIn, viewerZoomOut: panZoom.zoomOut, viewerZoomReset: panZoom.zoomReset,
     downloadCurrentImage, openViewer, onViewerKeydown,

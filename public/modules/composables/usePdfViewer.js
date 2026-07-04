@@ -41,6 +41,14 @@ export const usePdfViewer = ({ apiFetch, lockBodyScroll, unlockBodyScroll, downl
         console.error("pdf viewer render page failed", i, e);
       }
     }
+    // After canvases resize, re-apply scroll target from wheel zoom so the
+    // point under the cursor stays fixed once content bounds grow.
+    const ps = panZoom.consumePendingScroll?.();
+    const container = pdfViewerScroll.value;
+    if (ps && container) {
+      container.scrollLeft = ps.left;
+      container.scrollTop = ps.top;
+    }
   };
 
   const panZoom = usePanZoom({
@@ -51,7 +59,7 @@ export const usePdfViewer = ({ apiFetch, lockBodyScroll, unlockBodyScroll, downl
     roundScale: true,
     onScaleChange: () => renderPdfViewerPages(),
     scrollContainer: () => pdfViewerScroll.value,
-    dragThreshold: 1,
+    dragThreshold: 0,
   });
 
   const closePdfViewer = () => {
@@ -145,6 +153,7 @@ export const usePdfViewer = ({ apiFetch, lockBodyScroll, unlockBodyScroll, downl
     onPdfViewerPointerDown: panZoom.onPointerDown,
     onPdfViewerPointerMove: panZoom.onPointerMove,
     onPdfViewerPointerUp: panZoom.onPointerUp,
+    onPdfViewerWheel: panZoom.onWheel,
     onPdfViewerKeydown,
   };
 };

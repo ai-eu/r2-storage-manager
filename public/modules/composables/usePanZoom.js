@@ -41,6 +41,8 @@ export const usePanZoom = (options = {}) => {
   const pointers = new Map();
   let pinchStart = null;
   let dragLast = null;
+  // Scroll position to re-apply after async content resize (scroll mode wheel zoom).
+  let pendingScroll = null;
 
   const applyScale = (raw) => {
     let s = clamp(raw, minScale, maxScale);
@@ -53,6 +55,58 @@ export const usePanZoom = (options = {}) => {
   const reset = () => {
     scale.value = 1; tx.value = 0; ty.value = 0;
     pinchStart = null; dragLast = null; pointers.clear();
+    pendingScroll = null;
+  };
+
+  // Re-apply a pending scroll target after async content resize (e.g. PDF re-render).
+  // Returns the pending target if any (so callers can apply it on their container).
+  const consumePendingScroll = () => {
+    const ps = pendingScroll;
+    pendingScroll = null;
+    return ps;
+  };
+
+  // Wheel zoom centered on cursor. For "translate" mode adjusts tx/ty so the
+  // point under the cursor stays fixed. For "scroll" mode adjusts scrollLeft/
+  // scrollTop and stashes a pending target for re-application after async resize.
+  const onWheel = (e) => {
+    if (!enabled()) return;
+    try { e.preventDefault(); } catch {}
+    const factor = Math.exp(-e.deltaY * 0.0015);
+    const s0 = scale.value;
+    let s = clamp(s0 * factor, minScale, maxScale);
+    if (roundScale) s = Math.round(s * 100) / 100;
+    if (s === s0) return;
+    const k = s / s0;
+    if (panMode === "scroll") {
+      const container = scrollContainer?.();
+      if (container) {
+        const rect = container.getBoundingClientRect();
+        const cx = e.clientX - rect.left;
+        const cy = e.clientY - rect.top;
+        const targetLeft = container.scrollLeft * k + cx * (k - 1);
+        const targetTop = container.scrollTop * k + cy * (k - 1);
+        pendingScroll = { left: targetLeft, top: targetTop };
+        scale.value = s;
+        if (onScaleChange) onScaleChange(s);
+        // Apply immediately (may be clamped before content resizes).
+        container.scrollLeft = targetLeft;
+        container.scrollTop = targetTop;
+      } else {
+        scale.value = s;
+        if (onScaleChange) onScaleChange(s);
+      }
+      if (s <= minScale) { tx.value = 0; ty.value = 0; }
+    } else {
+      const rect = e.currentTarget.getBoundingClientRect();
+      const cx = e.clientX - (rect.left + rect.width / 2);
+      const cy = e.clientY - (rect.top + rect.height / 2);
+      tx.value = tx.value * k + cx * (1 - k);
+      ty.value = ty.value * k + cy * (1 - k);
+      scale.value = s;
+      if (onScaleChange) onScaleChange(s);
+      if (clampTranslate) clampTranslate();
+    }
   };
 
   const zoomIn = (step = 0.5) => {
@@ -140,5 +194,6 @@ export const usePanZoom = (options = {}) => {
     scale, tx, ty,
     reset, zoomIn, zoomOut, zoomReset,
     onPointerDown, onPointerMove, onPointerUp,
+    onWheel, consumePendingScroll,
   };
 };
