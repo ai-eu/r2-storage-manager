@@ -13,6 +13,8 @@ import { ref } from "https://unpkg.com/vue@3/dist/vue.esm-browser.prod.js";
 //   openPdfViewer       — PDF viewer opener (url, name)
 //   downloadBlob        — downloads a blob by URL
 //   isImage, isPdf      — file-type predicates
+//   pagesViewOpen, pagesViewTitle, pagesViewList, pagesViewDocId
+//                       — shared refs (owned by app.js, also used by useDocuments)
 export function usePagesView({
   apiFetch,
   uploading,
@@ -24,12 +26,11 @@ export function usePagesView({
   downloadBlob,
   isImage,
   isPdf,
+  pagesViewOpen,
+  pagesViewTitle,
+  pagesViewList,
+  pagesViewDocId,
 }) {
-  const pagesViewOpen = ref(false);
-  const pagesViewTitle = ref("");
-  const pagesViewList = ref([]);
-  const pagesViewDocId = ref(null);
-
   const mapPages = (pages) => (pages || []).map((p) => ({
     ...p,
     thumb_url: p.thumb_key
