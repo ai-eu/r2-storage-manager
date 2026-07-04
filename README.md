@@ -16,11 +16,16 @@ Personal secure cloud storage for documents, photos, and sensitive files. Self-h
 ## Features
 
 - Upload, download, delete files via web UI
-- Tag-based organization with search
-- Image thumbnails (generated client-side, stored in R2)
-- Image viewer with pinch-to-zoom
-- Mobile-friendly responsive design
-- Single API key authentication
+- Multi-page documents: scan/image sets assembled into a single PDF
+- Image processing modal with brightness / contrast / sharpness sliders and auto-enhancement
+- Page reordering and add-pages flow for existing documents
+- Tag-based organization with tag cloud (top, all, related tags) and search
+- Image and PDF thumbnails (generated client-side, stored in R2)
+- Image viewer with pinch-to-zoom and wheel zoom
+- PDF viewer with pan/zoom
+- R2 + D1 usage tracking
+- Mobile-friendly responsive dark UI
+- Single API key authentication (cookie or Bearer)
 - Everything hosted on Cloudflare (Workers + R2 + D1)
 
 ## Stack
@@ -113,19 +118,27 @@ npm run dev
 r2-storage-manager/
 ├── .github/
 │   └── workflows/
-│       └── deploy.yml  # One-click GitHub Actions deploy
-├── public/             # Frontend (served by Worker)
-│   ├── index.html      # Login page
-│   ├── app.html        # Main app
-│   ├── app.js          # Vue.js app logic
-│   └── style.css       # Styles
+│       └── deploy.yml          # One-click GitHub Actions deploy
+├── public/                     # Frontend (served as Worker assets, no build step)
+│   ├── index.html              # Login page
+│   ├── app.html                # Main app shell
+│   ├── app.js                  # Vue 3 composition root (wires composables)
+│   ├── style.css               # Styles
+│   └── modules/
+│       ├── api/                # client.js, documents.js, usage.js — fetch wrappers + resources
+│       ├── composables/        # useXxx.js — Vue composables (DI-injected)
+│       ├── image/              # process.js (decode/autocorrect), thumb.js (thumbnails)
+│       ├── pdf/                # build.js (PDF.js render/assemble helpers)
+│       └── utils/              # files.js, format.js, tags.js — pure helpers
 ├── src/
-│   └── worker.js       # Cloudflare Worker (API)
+│   └── worker.js               # Cloudflare Worker (Hono API, ~1100 lines, single file)
 ├── scripts/
-│   ├── setup.js        # Interactive setup wizard
-│   └── r2-cors.json    # R2 bucket CORS config
-├── schema.sql          # D1 database schema
-├── wrangler.toml       # Cloudflare config
+│   ├── setup.js                # Interactive setup wizard
+│   ├── reset.js                # Wipe bucket + DB (destructive)
+│   ├── migrate-documents.js    # Document schema migration
+│   └── r2-cors.json            # R2 bucket CORS config
+├── schema.sql                  # D1 database schema (authoritative)
+├── wrangler.toml               # Cloudflare config + bindings
 └── package.json
 ```
 

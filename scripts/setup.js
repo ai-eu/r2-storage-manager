@@ -139,6 +139,7 @@ async function main() {
 
   // 6. Update wrangler.toml
   console.log("\n📝 Updating wrangler.toml...");
+  updateToml("account_id", accountId);
   updateToml("R2_ACCOUNT_ID", accountId);
   updateToml("database_id", dbId);
   console.log("   ✅ Done");
@@ -151,15 +152,19 @@ async function main() {
     wrangler(["d1", "execute", "r2-storage", "--remote", "--file=-"], { input: schemaSql });
     console.log("   ✅ Tables and indexes ready");
   } catch (e) {
-    // Fallback: try one by one
-    console.log("   ⚠️  Batch failed, trying one by one...");
+    // Fallback: split into statements by ";" and run each (multi-line CREATE TABLE stays intact)
+    console.log("   ⚠️  Batch failed, trying statement by statement...");
+    const statements = schemaSql
+      .split(";")
+      .map((s) => s.trim())
+      .filter(Boolean);
     let ok = true;
-    for (const line of schemaSql.split("\n")) {
+    for (const stmt of statements) {
       try {
-        wrangler(["d1", "execute", "r2-storage", "--remote", "--command", line.replace(/;$/, "")]);
-      } catch {
+        wrangler(["d1", "execute", "r2-storage", "--remote", "--command", stmt]);
+      } catch (err) {
         ok = false;
-        console.log(`   ⚠️  Failed: ${line.slice(0, 60)}...`);
+        console.log(`   ⚠️  Failed: ${stmt.slice(0, 60).replace(/\s+/g, " ")}...`);
       }
     }
     if (ok) console.log("   ✅ Tables and indexes ready");
