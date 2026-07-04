@@ -3,9 +3,12 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
   <title>R2 Storage Manager</title>
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
-  <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/style.css?v=5" />
 </head>
 <body>
   <div id="app" class="app-layout" v-cloak>
@@ -36,14 +39,38 @@
         <div v-if="usage" class="usage-widget usage-widget-sidebar">
           <div class="usage-title">Workers requests</div>
           <div class="usage-bar">
-            <div class="usage-bar-fill" :style="{width: usagePct + '%'}"></div>
+            <div class="usage-bar-fill" :style="{width: workersPct + '%'}"></div>
           </div>
           <div class="usage-text">
-            {{ formatNum(usage.used) }} / {{ formatNum(usage.limit) }}
+            {{ formatNum(usage.workers.used) }} / {{ formatNum(usage.workers.limit) }}
           </div>
-          <div class="usage-remaining" :class="{'usage-warn': usagePct > 80}">
-            {{ formatNum(usage.remaining) }} left today
+          <div class="usage-remaining" :class="{'usage-warn': workersPct > 80}">
+            {{ formatNum(usage.workers.remaining) }} left today
           </div>
+          <template v-if="usage.r2_storage">
+            <div class="usage-divider"></div>
+            <div class="usage-title">R2 storage</div>
+            <div class="usage-bar">
+              <div class="usage-bar-fill" :style="{width: storagePct + '%'}"></div>
+            </div>
+            <div class="usage-text">
+              {{ formatBytes(usage.r2_storage.used_bytes) }} / {{ formatBytes(usage.r2_storage.limit_bytes) }}
+            </div>
+            <div class="usage-remaining" :class="{'usage-warn': storagePct > 80}">
+              {{ formatBytes(usage.r2_storage.remaining_bytes) }} free
+            </div>
+            <div class="usage-sub">{{ formatNum(usage.r2_storage.object_count) }} objects</div>
+          </template>
+          <template v-if="usage.r2_operations">
+            <div class="usage-divider"></div>
+            <div class="usage-title">R2 ops <span style="text-transform:none;font-weight:400">(this month)</span></div>
+            <div class="usage-sub">
+              Class A: {{ formatNum(usage.r2_operations.class_a.used) }} / {{ formatNum(usage.r2_operations.class_a.limit) }}
+            </div>
+            <div class="usage-sub">
+              Class B: {{ formatNum(usage.r2_operations.class_b.used) }} / {{ formatNum(usage.r2_operations.class_b.limit) }}
+            </div>
+          </template>
         </div>
         <button @click="logout" class="btn-secondary btn-logout-sidebar">Log out</button>
       </div>
@@ -59,7 +86,7 @@
         <button @click="refreshAll" class="btn-icon" title="Refresh">↻</button>
       </div>
 
-      <div class="files-section">
+      <div v-if="activeTag" class="files-section">
         <div v-if="loading" class="loading-state"><span>Loading...</span></div>
         <div v-else-if="documents.length===0" class="empty-state"><span>No documents</span></div>
         <div v-else class="files-grid">
@@ -110,14 +137,38 @@
         <div v-if="usage" class="usage-widget usage-widget-main">
           <div class="usage-title">Workers requests</div>
           <div class="usage-bar">
-            <div class="usage-bar-fill" :style="{width: usagePct + '%'}"></div>
+            <div class="usage-bar-fill" :style="{width: workersPct + '%'}"></div>
           </div>
           <div class="usage-text">
-            {{ formatNum(usage.used) }} / {{ formatNum(usage.limit) }}
+            {{ formatNum(usage.workers.used) }} / {{ formatNum(usage.workers.limit) }}
           </div>
-          <div class="usage-remaining" :class="{'usage-warn': usagePct > 80}">
-            {{ formatNum(usage.remaining) }} left today
+          <div class="usage-remaining" :class="{'usage-warn': workersPct > 80}">
+            {{ formatNum(usage.workers.remaining) }} left today
           </div>
+          <template v-if="usage.r2_storage">
+            <div class="usage-divider"></div>
+            <div class="usage-title">R2 storage</div>
+            <div class="usage-bar">
+              <div class="usage-bar-fill" :style="{width: storagePct + '%'}"></div>
+            </div>
+            <div class="usage-text">
+              {{ formatBytes(usage.r2_storage.used_bytes) }} / {{ formatBytes(usage.r2_storage.limit_bytes) }}
+            </div>
+            <div class="usage-remaining" :class="{'usage-warn': storagePct > 80}">
+              {{ formatBytes(usage.r2_storage.remaining_bytes) }} free
+            </div>
+            <div class="usage-sub">{{ formatNum(usage.r2_storage.object_count) }} objects</div>
+          </template>
+          <template v-if="usage.r2_operations">
+            <div class="usage-divider"></div>
+            <div class="usage-title">R2 ops <span style="text-transform:none;font-weight:400">(this month)</span></div>
+            <div class="usage-sub">
+              Class A: {{ formatNum(usage.r2_operations.class_a.used) }} / {{ formatNum(usage.r2_operations.class_a.limit) }}
+            </div>
+            <div class="usage-sub">
+              Class B: {{ formatNum(usage.r2_operations.class_b.used) }} / {{ formatNum(usage.r2_operations.class_b.limit) }}
+            </div>
+          </template>
         </div>
         <button @click="logout" class="btn-secondary btn-logout-main">Log out</button>
       </div>
@@ -229,7 +280,16 @@
     <div v-if="viewerOpen" class="viewer-overlay">
       <div class="viewer-header">
         <div class="viewer-header-title">{{ viewerName }}</div>
-        <button @click="closeViewer" class="viewer-close-btn">Close</button>
+        <div class="viewer-toolbar">
+          <button @click="viewerZoomOut" class="viewer-zoom-btn" title="Zoom out">−</button>
+          <span class="viewer-zoom-val">{{ Math.round(viewerScale * 100) }}%</span>
+          <button @click="viewerZoomIn" class="viewer-zoom-btn" title="Zoom in">+</button>
+          <button @click="viewerZoomReset" class="viewer-zoom-btn" title="Reset zoom">1:1</button>
+        </div>
+        <div class="viewer-actions">
+          <button @click="downloadCurrentImage" class="viewer-action-btn" title="Download">⤓</button>
+          <button @click="closeViewer" class="viewer-close-btn">Close</button>
+        </div>
       </div>
       <div class="viewer-body" ref="viewerStage" style="touch-action:none;"
         @pointerdown="onViewerPointerDown" @pointermove="onViewerPointerMove"
@@ -255,13 +315,19 @@
           <span class="pdf-viewer-zoom-val">{{ Math.round(pdfViewerScale * 100) }}%</span>
           <button @click="pdfViewerZoomIn" class="pdf-viewer-zoom-btn" title="Zoom in">+</button>
           <button @click="pdfViewerZoomReset" class="pdf-viewer-zoom-btn" title="Reset zoom">1:1</button>
+        </div>
+        <div class="pdf-viewer-actions">
+          <button @click="downloadCurrentPdf" class="pdf-viewer-action-btn" title="Download">⤓</button>
           <button @click="closePdfViewer" class="viewer-close-btn">Close</button>
         </div>
       </div>
       <div class="pdf-viewer-body">
         <div v-if="pdfViewerLoading" class="pdf-viewer-loading">Loading PDF…</div>
         <div v-else-if="pdfViewerError" class="pdf-viewer-error">{{ pdfViewerError }}</div>
-        <div v-else class="pdf-viewer-scroll">
+        <div v-else class="pdf-viewer-scroll" ref="pdfViewerScroll"
+          :style="{ touchAction: pdfViewerScale > 1 ? 'none' : 'pan-y' }"
+          @pointerdown="onPdfViewerPointerDown" @pointermove="onPdfViewerPointerMove"
+          @pointerup="onPdfViewerPointerUp" @pointercancel="onPdfViewerPointerUp">
           <canvas
             v-for="n in pdfViewerPageCount"
             :key="n"
@@ -275,6 +341,6 @@
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-  <script src="/app.js"></script>
+  <script src="/app.js?v=5"></script>
 </body>
 </html>

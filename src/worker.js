@@ -425,16 +425,21 @@ app.post("/api/documents/register", async (c) => {
     return c.json({ error: "pages array required" }, 400);
   }
 
+  const pdfPage = pages.find((p) =>
+    (p.content_type || "").includes("pdf") || /\.pdf$/i.test(p.filename || p.key || ""),
+  );
+
   try {
     await ensureSchema(db);
     const stmts = [
       db.prepare(
-        `INSERT INTO documents(id, title, page_count, uploaded_at, thumb_key)
-         VALUES(?,?,?,?,?)
+        `INSERT INTO documents(id, title, page_count, uploaded_at, thumb_key, pdf_key)
+         VALUES(?,?,?,?,?,?)
          ON CONFLICT(id) DO UPDATE SET
            title=excluded.title, page_count=excluded.page_count,
-           uploaded_at=excluded.uploaded_at, thumb_key=excluded.thumb_key`,
-      ).bind(id, title.trim(), pages.length, uploadedAt, thumb_key || null),
+           uploaded_at=excluded.uploaded_at, thumb_key=excluded.thumb_key,
+           pdf_key=COALESCE(documents.pdf_key, excluded.pdf_key)`,
+      ).bind(id, title.trim(), pages.length, uploadedAt, thumb_key || null, pdfPage?.key || null),
       db.prepare("DELETE FROM document_tags WHERE document_id=?").bind(id),
     ];
 
@@ -472,6 +477,57 @@ app.post("/api/documents/register", async (c) => {
   }
 });
 
+// ── Backfill pdf_key for old documents from R2 ──
+const backfillPdfKeys = async (db, bucket) => {
+  const docs = await db.prepare("SELECT id FROM documents WHERE pdf_key IS NULL").all();
+  if (!docs.results?.length) return;
+
+  const docIds = docs.results.map((r) => r.id);
+
+  // 1. Check objects table for directly-uploaded PDFs
+  const placeholders = docIds.map(() => "?").join(",");
+  const objRows = await db
+    .prepare(
+      `SELECT document_id, MIN(key) AS key FROM objects
+       WHERE document_id IN (${placeholders})
+         AND (content_type LIKE '%pdf%' OR key LIKE '%.pdf')
+       GROUP BY document_id`,
+    )
+    .bind(...docIds)
+    .all();
+
+  const stmts = [];
+  const foundIds = new Set();
+  for (const row of objRows.results || []) {
+    foundIds.add(row.document_id);
+    stmts.push(
+      db.prepare("UPDATE documents SET pdf_key=? WHERE id=? AND pdf_key IS NULL")
+        .bind(row.key, row.document_id),
+    );
+  }
+
+  // 2. Check R2 for image-converted PDFs (key pattern: files/{ts}_{docId}.pdf)
+  const remaining = docIds.filter((id) => !foundIds.has(id));
+  if (remaining.length) {
+    const r2List = await bucket.list({ prefix: "files/", limit: 1000 });
+    const pdfKeyByDocId = {};
+    for (const obj of r2List.objects) {
+      const match = obj.key.match(/^files\/\d+_(.+)\.pdf$/);
+      if (match) pdfKeyByDocId[match[1]] = obj.key;
+    }
+    for (const docId of remaining) {
+      if (pdfKeyByDocId[docId]) {
+        stmts.push(
+          db.prepare("UPDATE documents SET pdf_key=? WHERE id=? AND pdf_key IS NULL")
+            .bind(pdfKeyByDocId[docId], docId),
+        );
+      }
+    }
+  }
+
+  if (stmts.length) await db.batch(stmts);
+};
+
 // ── GET /api/documents ──
 app.get("/api/documents", async (c) => {
   const tag = normalizeTag(c.req.query("tag") || "");
@@ -480,6 +536,7 @@ app.get("/api/documents", async (c) => {
 
   try {
     await ensureSchema(db);
+    await backfillPdfKeys(db, c.env.MY_BUCKET);
 
     const parts = [
       "SELECT d.id, d.title, d.page_count, d.uploaded_at, d.thumb_key, d.pdf_key,",
@@ -1021,55 +1078,151 @@ app.delete("/api/objects/:key{.*}", async (c) => {
 
 // ── GET /api/usage ──
 const WORKERS_FREE_LIMIT = 100000;
+const R2_STORAGE_FREE_LIMIT = 10 * 1024 * 1024 * 1024;
+const R2_CLASS_A_FREE_LIMIT = 1000000;
+const R2_CLASS_B_FREE_LIMIT = 10000000;
 
-const fetchWorkersUsage = async (env) => {
-  const accountId = env.R2_ACCOUNT_ID;
-  const token = env.CF_API_TOKEN;
-  if (!accountId || !token) return null;
+const CLASS_A_ACTIONS = new Set([
+  "PutObject", "CopyObject", "CompleteMultipartUpload",
+  "CreateMultipartUpload", "UploadPart", "UploadPartCopy",
+  "ListObjects", "ListObjectsV2", "HeadBucket",
+  "DeleteObject", "DeleteObjects",
+]);
 
-  const today = new Date().toISOString().slice(0, 10);
-  const startOfDay = `${today}T00:00:00.000Z`;
-  const endOfDay = `${today}T23:59:59.999Z`;
+const _graphqlDebug = { workersStatus: null, workersErrors: null, r2StorageStatus: null, r2StorageErrors: null, r2OpsStatus: null, r2OpsErrors: null };
 
+const graphqlRequest = async (token, query, debugKey) => {
   const resp = await fetch("https://api.cloudflare.com/client/v4/graphql", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      query: `query {
-        viewer {
-          accounts(filter: { accountTag: "${accountId}" }) {
-            workersInvocationsAdaptive(
-              filter: { datetime_geq: "${startOfDay}", datetime_leq: "${endOfDay}" }
-              limit: 10000
-            ) {
-              dimensions { datetime }
-              sum { requests }
-            }
-          }
-        }
-      }`,
-    }),
+    body: JSON.stringify({ query }),
   });
-
-  if (!resp.ok) return null;
+  if (debugKey) _graphqlDebug[debugKey + "Status"] = resp.status;
+  if (!resp.ok) {
+    if (debugKey) _graphqlDebug[debugKey + "Errors"] = `HTTP ${resp.status}`;
+    return null;
+  }
   const data = await resp.json();
-  if (data?.errors?.length) return null;
+  if (data?.errors?.length) {
+    if (debugKey) _graphqlDebug[debugKey + "Errors"] = JSON.stringify(data.errors);
+    return null;
+  }
+  return data?.data?.viewer?.accounts?.[0] || null;
+};
 
-  const accounts = data?.data?.viewer?.accounts;
-  if (!accounts || !accounts.length) return null;
+const fetchWorkersMetrics = async (accountId, token) => {
+  const today = new Date().toISOString().slice(0, 10);
+  const startOfDay = `${today}T00:00:00.000Z`;
+  const endOfDay = `${today}T23:59:59.999Z`;
 
-  let total = 0;
-  for (const acc of accounts) {
-    const groups = acc.workersInvocationsAdaptive || [];
-    for (const g of groups) {
-      total += g?.sum?.requests || 0;
+  const acc = await graphqlRequest(token, `query {
+    viewer {
+      accounts(filter: { accountTag: "${accountId}" }) {
+        workersInvocationsAdaptive(
+          filter: { datetime_geq: "${startOfDay}", datetime_leq: "${endOfDay}" }
+          limit: 10000
+        ) {
+          sum { requests subrequests }
+          quantiles { cpuTimeP50 }
+        }
+      }
+    }
+  }`, "workers");
+
+  if (!acc) return null;
+
+  let totalRequests = 0;
+  let totalSubrequests = 0;
+  let cpuTimeP50 = 0;
+  for (const g of acc.workersInvocationsAdaptive || []) {
+    totalRequests += g?.sum?.requests || 0;
+    totalSubrequests += g?.sum?.subrequests || 0;
+    cpuTimeP50 = Math.max(cpuTimeP50, g?.quantiles?.cpuTimeP50 || 0);
+  }
+
+  return {
+    used: totalRequests,
+    limit: WORKERS_FREE_LIMIT,
+    remaining: WORKERS_FREE_LIMIT - totalRequests,
+    subrequests: totalSubrequests,
+    cpuTimeP50,
+  };
+};
+
+const fetchR2Storage = async (accountId, token, bucketName) => {
+  const now = new Date();
+  const endOfDay = now.toISOString();
+  const monthAgo = new Date(now.getTime() - 31 * 24 * 60 * 60 * 1000).toISOString();
+
+  const acc = await graphqlRequest(token, `query {
+    viewer {
+      accounts(filter: { accountTag: "${accountId}" }) {
+        r2StorageAdaptiveGroups(
+          limit: 1
+          filter: { datetime_geq: "${monthAgo}", datetime_leq: "${endOfDay}", bucketName: "${bucketName}" }
+          orderBy: [datetime_DESC]
+        ) {
+          max { objectCount payloadSize metadataSize }
+          dimensions { datetime }
+        }
+      }
+    }
+  }`, "r2Storage");
+
+  if (!acc) return null;
+
+  const storage = (acc.r2StorageAdaptiveGroups || [])[0];
+  if (!storage?.max) return null;
+
+  const usedBytes = (storage.max.payloadSize || 0) + (storage.max.metadataSize || 0);
+  return {
+    used_bytes: usedBytes,
+    limit_bytes: R2_STORAGE_FREE_LIMIT,
+    remaining_bytes: Math.max(0, R2_STORAGE_FREE_LIMIT - usedBytes),
+    object_count: storage.max.objectCount || 0,
+  };
+};
+
+const fetchR2Operations = async (accountId, token, bucketName) => {
+  const now = new Date();
+  const endOfDay = now.toISOString();
+  const firstOfMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+
+  const acc = await graphqlRequest(token, `query {
+    viewer {
+      accounts(filter: { accountTag: "${accountId}" }) {
+        r2OperationsAdaptiveGroups(
+          limit: 10000
+          filter: { datetime_geq: "${firstOfMonth}", datetime_leq: "${endOfDay}", bucketName: "${bucketName}" }
+        ) {
+          sum { requests }
+          dimensions { actionType }
+        }
+      }
+    }
+  }`, "r2Ops");
+
+  if (!acc) return null;
+
+  let classA = 0;
+  let classB = 0;
+  for (const g of acc.r2OperationsAdaptiveGroups || []) {
+    const action = g?.dimensions?.actionType;
+    const reqs = g?.sum?.requests || 0;
+    if (CLASS_A_ACTIONS.has(action)) {
+      classA += reqs;
+    } else {
+      classB += reqs;
     }
   }
 
-  return { used: total, limit: WORKERS_FREE_LIMIT, remaining: WORKERS_FREE_LIMIT - total, date: today };
+  return {
+    class_a: { used: classA, limit: R2_CLASS_A_FREE_LIMIT, remaining: R2_CLASS_A_FREE_LIMIT - classA },
+    class_b: { used: classB, limit: R2_CLASS_B_FREE_LIMIT, remaining: R2_CLASS_B_FREE_LIMIT - classB },
+  };
 };
 
 app.get("/api/usage", async (c) => {
@@ -1081,7 +1234,7 @@ app.get("/api/usage", async (c) => {
 
     const now = new Date();
     const today = now.toISOString().slice(0, 10);
-    const hourBucket = now.toISOString().slice(0, 13);
+    const hourBucket = "v6_" + now.toISOString().slice(0, 13);
     const cached = await db
       .prepare("SELECT data FROM usage_cache WHERE date=?")
       .bind(hourBucket)
@@ -1091,19 +1244,46 @@ app.get("/api/usage", async (c) => {
       return c.json(JSON.parse(cached.data));
     }
 
-    const usage = await fetchWorkersUsage(c.env);
-    if (!usage) {
-      return c.json({ used: 0, limit: WORKERS_FREE_LIMIT, remaining: WORKERS_FREE_LIMIT, date: today, unavailable: true });
+    const accountId = c.env.R2_ACCOUNT_ID;
+    const token = c.env.CF_API_TOKEN;
+    const bucketName = c.env.R2_BUCKET_NAME;
+
+    if (!accountId || !token) {
+      return c.json({
+        workers: { used: 0, limit: WORKERS_FREE_LIMIT, remaining: WORKERS_FREE_LIMIT, unavailable: true },
+        r2_storage: null,
+        r2_operations: null,
+        date: today,
+        unavailable: true,
+        debug: {
+          hasAccountId: !!accountId,
+          hasToken: !!token,
+          hasBucketName: !!bucketName,
+        },
+      });
     }
+
+    const [workers, r2Storage, r2Operations] = await Promise.all([
+      fetchWorkersMetrics(accountId, token).catch(() => null),
+      bucketName ? fetchR2Storage(accountId, token, bucketName).catch(() => null) : Promise.resolve(null),
+      bucketName ? fetchR2Operations(accountId, token, bucketName).catch(() => null) : Promise.resolve(null),
+    ]);
+
+    const result = {
+      workers: workers || { used: 0, limit: WORKERS_FREE_LIMIT, remaining: WORKERS_FREE_LIMIT, unavailable: true },
+      r2_storage: r2Storage,
+      r2_operations: r2Operations,
+      date: today,
+    };
 
     await db.batch([
       db.prepare("DELETE FROM usage_cache WHERE date <> ?").bind(hourBucket),
       db.prepare(
         "INSERT OR REPLACE INTO usage_cache(date, data, fetched_at) VALUES(?,?,?)",
-      ).bind(hourBucket, JSON.stringify(usage), Date.now()),
+      ).bind(hourBucket, JSON.stringify(result), Date.now()),
     ]);
 
-    return c.json(usage);
+    return c.json(result);
   } catch (err) {
     return c.json({ error: err?.message || String(err) }, 500);
   }

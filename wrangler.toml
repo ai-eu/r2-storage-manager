@@ -1,7 +1,7 @@
 name = "r2-storage-manager"
 main = "src/worker.js"
 compatibility_date = "2024-03-22"
-account_id = ""
+account_id = "e1143eaa8b8b78e32367e0c6c99d3ed2"
 assets = { directory = "./public" }
 
 [[r2_buckets]]
@@ -14,5 +14,5 @@ database_name = "r2-storage"
 database_id = ""
 
 [vars]
-R2_ACCOUNT_ID = ""
+R2_ACCOUNT_ID = "e1143eaa8b8b78e32367e0c6c99d3ed2"
 R2_BUCKET_NAME = "r2-storage"
