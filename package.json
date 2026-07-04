@@ -4,7 +4,9 @@
   "description": "Self-hosted file manager for Cloudflare R2",
   "main": "src/worker.js",
   "scripts": {
+    "predev": "node scripts/write-deploy-info.js",
     "dev": "wrangler dev",
+    "predeploy": "node scripts/write-deploy-info.js",
     "deploy": "wrangler deploy",
     "setup": "node scripts/setup.js",
     "reset": "node scripts/reset.js",

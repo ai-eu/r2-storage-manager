@@ -158,8 +158,9 @@ body { overflow-x: hidden; }
 .usage-compact .usage-row-label { font-size:11px; text-transform:uppercase; color:var(--text-secondary); letter-spacing:0.4px; }
 .usage-compact .usage-row-val { font-size:12px; color:var(--text-secondary); font-weight:600; text-align:right; }
 
-/* Logout icon button */
-.btn-logout { align-self:flex-end; }
+/* Logout + deploy time row */
+.sidebar-bottom-row { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.deploy-time { font-size:11px; color:var(--text-secondary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 
 /* PDF processing modal — fullscreen */
 .pdf-fullscreen { position:fixed; inset:0; z-index:1000; display:flex; background:var(--bg-primary); }

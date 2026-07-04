@@ -1,4 +1,4 @@
-import { createApp, ref, onMounted } from "https://unpkg.com/vue@3/dist/vue.esm-browser.prod.js";
+import { createApp, ref, computed, onMounted } from "https://unpkg.com/vue@3/dist/vue.esm-browser.prod.js";
 import { normalizeTag, parseTagsInput, tagToColors } from "./modules/utils/tags.js";
 import { getExt, getExtIcon, isImage, isPdf } from "./modules/utils/files.js";
 import { formatNum, formatBytes, formatCompact } from "./modules/utils/format.js";
@@ -39,6 +39,12 @@ createApp({
     const pagesViewTitle = ref("");
     const pagesViewList = ref([]);
     const pagesViewDocId = ref(null);
+    const deployedAt = ref("");
+    const deployedAtLabel = computed(() =>
+      deployedAt.value
+        ? new Date(deployedAt.value).toLocaleString()
+        : "",
+    );
 
     const usage = useUsage({ fetchUsageData });
     const pdfModal = usePdfModal({ decodeImageFile, autoProcessImageData, applySliderDeltas, autoPickQuality });
@@ -109,6 +115,10 @@ createApp({
         const r = await fetch("/api/auth/check");
         if (!r.ok) { window.location.href = "/"; return; }
       } catch { window.location.href = "/"; return; }
+      fetch("/deploy-info.json")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => { if (d && d.deployedAt) deployedAt.value = d.deployedAt; })
+        .catch(() => {});
       documents.fetchTopTags();
       documents.fetchAllTags();
       usage.fetchUsage();
@@ -122,6 +132,7 @@ createApp({
       uploading, uploadProgress, uploadError,
       tagToColors, formatNum, formatBytes, formatCompact,
       getExt, getExtIcon, isImage, isPdf, logout,
+      deployedAt, deployedAtLabel,
     };
   },
 }).mount("#app");
