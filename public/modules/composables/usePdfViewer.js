@@ -1,14 +1,14 @@
 // ── usePdfViewer: PDF viewer state + actions ──
 //
 // Uses usePanZoom in "scroll" mode (scale only; pan via scroll container).
-// Dependencies passed in: { apiFetch, lockBodyScroll, unlockBodyScroll, downloadBlob }.
+// Dependencies passed in: { apiFetch, createShareLink, lockBodyScroll, unlockBodyScroll, downloadBlob }.
 // lockBodyScroll/unlockBodyScroll are shared with image viewer (defined in app.js
 // for now; will be consolidated later).
 
 import { ref, nextTick } from "https://unpkg.com/vue@3/dist/vue.esm-browser.prod.js";
 import { usePanZoom } from "./usePanZoom.js";
 
-export const usePdfViewer = ({ apiFetch, lockBodyScroll, unlockBodyScroll, downloadBlob }) => {
+export const usePdfViewer = ({ apiFetch, createShareLink, lockBodyScroll, unlockBodyScroll, downloadBlob }) => {
   const pdfViewerOpen = ref(false);
   const pdfViewerName = ref("");
   const pdfViewerLoading = ref(false);
@@ -16,6 +16,7 @@ export const usePdfViewer = ({ apiFetch, lockBodyScroll, unlockBodyScroll, downl
   const pdfViewerPageCount = ref(0);
   const pdfViewerCanvases = ref([]);
   const pdfViewerScroll = ref(null);
+  const pdfViewerShareCopied = ref(false);
   let pdfViewerFitScale = 1;
   let pdfViewerDoc = null;
   let pdfViewerObjectUrl = null;
@@ -69,6 +70,7 @@ export const usePdfViewer = ({ apiFetch, lockBodyScroll, unlockBodyScroll, downl
     pdfViewerError.value = "";
     pdfViewerLoading.value = false;
     pdfViewerCanvases.value = [];
+    pdfViewerShareCopied.value = false;
     pdfViewerDownloadUrl = "";
     unlockBodyScroll();
     if (pdfViewerDoc) {
@@ -83,6 +85,24 @@ export const usePdfViewer = ({ apiFetch, lockBodyScroll, unlockBodyScroll, downl
 
   const downloadCurrentPdf = () => {
     if (pdfViewerDownloadUrl) downloadBlob(pdfViewerDownloadUrl, pdfViewerName.value || "document.pdf");
+  };
+
+  const copyPdfShareLink = async () => {
+    if (!pdfViewerDownloadUrl || !createShareLink) return;
+    try {
+      const url = new URL(pdfViewerDownloadUrl, window.location.origin);
+      const key = url.searchParams.get("key");
+      if (!key) return;
+      const { url: shareUrl } = await createShareLink({
+        key,
+        filename: pdfViewerName.value || "document.pdf",
+      });
+      await navigator.clipboard.writeText(shareUrl);
+      pdfViewerShareCopied.value = true;
+      setTimeout(() => { pdfViewerShareCopied.value = false; }, 2000);
+    } catch (e) {
+      console.error("copy pdf share link failed", e);
+    }
   };
 
   const pdfViewerSetCanvas = (el, n) => {
@@ -106,6 +126,7 @@ export const usePdfViewer = ({ apiFetch, lockBodyScroll, unlockBodyScroll, downl
     pdfViewerOpen.value = true;
     pdfViewerLoading.value = true;
     pdfViewerName.value = name || "Document";
+    pdfViewerShareCopied.value = false;
     pdfViewerDownloadUrl = url;
     lockBodyScroll();
     try {
@@ -147,9 +168,10 @@ export const usePdfViewer = ({ apiFetch, lockBodyScroll, unlockBodyScroll, downl
     pdfViewerOpen, pdfViewerName, pdfViewerLoading, pdfViewerError,
     pdfViewerPageCount, pdfViewerScale: panZoom.scale,
     pdfViewerCanvases, pdfViewerScroll, pdfViewerSetCanvas,
+    pdfViewerShareCopied,
     openPdfViewer, closePdfViewer,
     pdfViewerZoomIn, pdfViewerZoomOut, pdfViewerZoomReset,
-    downloadCurrentPdf,
+    downloadCurrentPdf, copyPdfShareLink,
     onPdfViewerPointerDown: panZoom.onPointerDown,
     onPdfViewerPointerMove: panZoom.onPointerMove,
     onPdfViewerPointerUp: panZoom.onPointerUp,

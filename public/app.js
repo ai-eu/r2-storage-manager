@@ -6,6 +6,7 @@ import { decodeImageFile, autoProcessImageData, applySliderDeltas, autoPickQuali
 import { generateImageThumbBlob, generatePdfThumbBlob } from "./modules/image/thumb.js";
 import { renderPageBlob, addJpegBlobToPdf, renderPdfBlob } from "./modules/pdf/build.js";
 import { apiFetch, logout, downloadBlob } from "./modules/api/client.js";
+import { createShareLink, clearShareTokens } from "./modules/api/share.js";
 import { fetchUsage as fetchUsageData } from "./modules/api/usage.js";
 import {
   fetchTopTags as fetchTopTagsData,
@@ -24,6 +25,7 @@ import { usePagesView } from "./modules/composables/usePagesView.js";
 import { useUpload } from "./modules/composables/useUpload.js";
 import { useDocuments } from "./modules/composables/useDocuments.js";
 import { useDocMenu } from "./modules/composables/useDocMenu.js";
+import { useShare } from "./modules/composables/useShare.js";
 
 if (typeof pdfjsLib !== "undefined") {
   pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
@@ -54,10 +56,12 @@ createApp({
     const imageViewer = useImageViewer({ downloadBlob });
     const pdfViewer = usePdfViewer({
       apiFetch,
+      createShareLink,
       lockBodyScroll: imageViewer.lockBodyScroll,
       unlockBodyScroll: imageViewer.unlockBodyScroll,
       downloadBlob,
     });
+    const share = useShare({ clearShareTokens });
     const documents = useDocuments({
       apiFetch,
       fetchDocumentsData, fetchTopTagsData, fetchAllTagsData, fetchRelatedTagsData,
@@ -132,7 +136,7 @@ createApp({
 
     return {
       ...usage, ...pdfModal, ...tagsModal, ...imageViewer, ...pdfViewer,
-      ...documents, ...pagesView, ...upload, ...docMenu,
+      ...documents, ...pagesView, ...upload, ...docMenu, ...share,
       uploading, uploadProgress, uploadError,
       tagToColors, formatNum, formatBytes, formatCompact,
       getExt, getExtIcon, isImage, isPdf, logout,

@@ -84,6 +84,41 @@ app.post("/api/logout", (c) => {
   return c.json({ success: true });
 });
 
+// ── GET /api/share/:token — public direct download via share token ──
+app.get("/api/share/:token", async (c) => {
+  const token = c.req.param("token");
+  if (!token) return c.json({ error: "token required" }, 400);
+
+  const db = c.env.DB;
+  if (!db) return c.json({ error: "DB not configured" }, 500);
+
+  try {
+    await ensureSchema(db);
+    const row = await db
+      .prepare("SELECT key, filename, content_type FROM share_links WHERE token = ? LIMIT 1")
+      .bind(token)
+      .first();
+    if (!row) return c.json({ error: "not found" }, 404);
+
+    const object = await c.env.MY_BUCKET.get(row.key);
+    if (!object) return c.json({ error: "not found" }, 404);
+
+    const filename = (row.filename || row.key.split("/").pop() || "download")
+      .replace(/"/g, '\\"');
+    return new Response(object.body, {
+      status: 200,
+      headers: {
+        "Content-Type": row.content_type || object.httpMetadata?.contentType || "application/octet-stream",
+        "Content-Length": object.size,
+        "Content-Disposition": `inline; filename="${filename}"`,
+        "Cache-Control": "private, max-age=0",
+      },
+    });
+  } catch (err) {
+    return c.json({ error: err?.message || String(err) }, 500);
+  }
+});
+
 // ── Auth middleware ──
 const authMiddleware = async (c, next) => {
   if (c.req.method === "OPTIONS") return next();
@@ -146,6 +181,16 @@ const sha256Hex = async (text) => {
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
 };
+
+// ── Share token helpers ──
+const randomBase64Url = (len) => {
+  const bytes = crypto.getRandomValues(new Uint8Array(len));
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+};
+
+const generateShareToken = () => randomBase64Url(16);
 
 // ── D1 schema ──
 let schemaReady = false;
@@ -233,6 +278,18 @@ const ensureSchema = async (db) => {
       data TEXT NOT NULL,
       fetched_at INTEGER NOT NULL
     )`,
+  ).run();
+  await db.prepare(
+    `CREATE TABLE IF NOT EXISTS share_links (
+      token TEXT PRIMARY KEY,
+      key TEXT NOT NULL,
+      filename TEXT,
+      content_type TEXT,
+      created_at INTEGER NOT NULL
+    )`,
+  ).run();
+  await db.prepare(
+    "CREATE INDEX IF NOT EXISTS idx_share_links_key ON share_links(key)",
   ).run();
   schemaReady = true;
 };
@@ -1043,6 +1100,46 @@ app.get("/api/objects/thumb-download-url", async (c) => {
       "Cache-Control": "public, max-age=86400",
     },
   });
+});
+
+// ── POST /api/share — create a public share token for an object key ──
+app.post("/api/share", async (c) => {
+  const db = c.env.DB;
+  if (!db) return c.json({ error: "DB not configured" }, 500);
+
+  const body = await c.req.json().catch(() => null);
+  if (!body) return c.json({ error: "Invalid JSON" }, 400);
+
+  const key = body.key;
+  if (!key || typeof key !== "string") return c.json({ error: "key required" }, 400);
+
+  try {
+    await ensureSchema(db);
+    const token = generateShareToken();
+    const filename = typeof body.filename === "string" ? body.filename : "";
+    await db.prepare(
+      "INSERT INTO share_links(token, key, filename, created_at) VALUES(?,?,?,?)",
+    ).bind(token, key, filename, Date.now()).run();
+
+    const origin = new URL(c.req.url).origin;
+    return c.json({ token, url: origin + "/api/share/" + token });
+  } catch (err) {
+    return c.json({ error: err?.message || String(err) }, 500);
+  }
+});
+
+// ── DELETE /api/share — delete all share tokens ──
+app.delete("/api/share", async (c) => {
+  const db = c.env.DB;
+  if (!db) return c.json({ error: "DB not configured" }, 500);
+
+  try {
+    await ensureSchema(db);
+    const result = await db.prepare("DELETE FROM share_links").run();
+    return c.json({ success: true, deleted: result.meta?.changes || 0 });
+  } catch (err) {
+    return c.json({ error: err?.message || String(err) }, 500);
+  }
 });
 
 // ── DELETE /api/objects/:key ──

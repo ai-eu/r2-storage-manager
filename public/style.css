@@ -160,7 +160,9 @@ body { overflow-x: hidden; }
 
 /* Logout + deploy time row */
 .sidebar-bottom-row { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.sidebar-actions { display:flex; align-items:center; gap:8px; }
 .deploy-time { font-size:11px; color:var(--text-secondary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.btn-icon:disabled { opacity:0.5; cursor:not-allowed; }
 
 /* PDF processing modal — fullscreen */
 .pdf-fullscreen { position:fixed; inset:0; z-index:1000; display:flex; background:var(--bg-primary); }
