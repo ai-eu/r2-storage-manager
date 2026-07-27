@@ -225,7 +225,8 @@ export function useUpload({
   // settings: { brightness, contrast, sharpness } from modal.
   // addDocId: existing doc id to add pages to, or null for new doc.
   // tags: array of tags (new doc only).
-  const processAndUploadPages = async (list, settings, addDocId, tags) => {
+  // comment: string (new doc only).
+  const processAndUploadPages = async (list, settings, addDocId, tags, comment) => {
     uploading.value = true;
     uploadProgress.value = 0;
     uploadError.value = "";
@@ -282,6 +283,7 @@ export function useUpload({
             title: list[0].file.name,
             pages,
             tags: tags || [],
+            comment: comment || "",
             thumb_key: docThumbKey,
           }),
         });
@@ -307,7 +309,7 @@ export function useUpload({
   };
 
   // Simple (non-image) upload path: no processing modal, optional PDF thumb.
-  const uploadNonImageFiles = async (otherFiles, tags) => {
+  const uploadNonImageFiles = async (otherFiles, tags, comment) => {
     uploading.value = true; uploadProgress.value = 0; uploadError.value = "";
     const uploadedKeys = [];
     try {
@@ -345,6 +347,7 @@ export function useUpload({
           title: otherFiles[0].name,
           pages: otherFiles.map((f, i) => ({ key: uploadedKeys[i], filename: f.name, content_type: f.type, size: f.size, page_number: i + 1, thumb_key: pageThumbKeys[i] })),
           tags,
+          comment: comment || "",
           thumb_key: pageThumbKeys[0],
         }),
       });
@@ -367,7 +370,7 @@ export function useUpload({
       const title = otherFiles.length === 1 ? "Enter tags" : "Enter tags for all files";
       const result = await openTagsModal({ title, initialValue: "" });
       if (result === null) return;
-      await uploadNonImageFiles(otherFiles, parseTagsInput(result));
+      await uploadNonImageFiles(otherFiles, parseTagsInput(result.tags), result.comment);
     }
 
     if (imageFiles.length) {
@@ -377,7 +380,7 @@ export function useUpload({
       const tagsResult = await openTagsModal({ title, initialValue: "" });
       if (tagsResult === null) return;
       const decodedList = pdfModalPages.value.slice(0, imageFiles.length);
-      await processAndUploadPages(decodedList, pages, null, parseTagsInput(tagsResult));
+      await processAndUploadPages(decodedList, pages, null, parseTagsInput(tagsResult.tags), tagsResult.comment);
     }
   };
 

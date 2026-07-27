@@ -36,10 +36,10 @@ export const deleteDocument = async (id) => {
   await apiFetch("/api/documents/" + encodeURIComponent(id), { method: "DELETE" });
 };
 
-export const editTags = async (id, tagsInput) => {
+export const editTags = async (id, tagsInput, comment) => {
   await apiFetch("/api/documents/" + encodeURIComponent(id) + "/tags", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ tags: parseTagsInput(tagsInput) }),
+    body: JSON.stringify({ tags: parseTagsInput(tagsInput), comment: comment ?? "" }),
   });
 };

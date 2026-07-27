@@ -1,14 +1,14 @@
 // ── useImageViewer: image viewer state + actions ──
 //
 // Uses usePanZoom in "translate" mode (transform: translate3d + scale).
-// Dependencies passed in: { downloadBlob }.
+// Dependencies passed in: { downloadBlob, createShareLink }.
 
 import { ref, computed, nextTick } from "https://unpkg.com/vue@3/dist/vue.esm-browser.prod.js";
 import { usePanZoom } from "./usePanZoom.js";
 
 const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
 
-export const useImageViewer = ({ downloadBlob }) => {
+export const useImageViewer = ({ downloadBlob, createShareLink }) => {
   const viewerOpen = ref(false);
   const viewerUrl = ref("");
   const viewerName = ref("");
@@ -18,6 +18,7 @@ export const useImageViewer = ({ downloadBlob }) => {
   const viewerImg = ref(null);
   const viewerBaseW = ref(0);
   const viewerBaseH = ref(0);
+  const viewerShareCopied = ref(false);
 
   const clampViewerTranslate = () => {
     const s = viewerStage.value;
@@ -83,9 +84,28 @@ export const useImageViewer = ({ downloadBlob }) => {
     if (viewerUrl.value) downloadBlob(viewerUrl.value, viewerName.value || "image");
   };
 
+  const copyImageShareLink = async () => {
+    if (!viewerUrl.value || !createShareLink) return;
+    try {
+      const url = new URL(viewerUrl.value, window.location.origin);
+      const key = url.searchParams.get("key");
+      if (!key) return;
+      const { url: shareUrl } = await createShareLink({
+        key,
+        filename: viewerName.value || "image",
+      });
+      await navigator.clipboard.writeText(shareUrl);
+      viewerShareCopied.value = true;
+      setTimeout(() => { viewerShareCopied.value = false; }, 2000);
+    } catch (e) {
+      console.error("copy image share link failed", e);
+    }
+  };
+
   const closeViewer = () => {
     viewerOpen.value = false; viewerUrl.value = ""; viewerName.value = "";
     viewerPages.value = []; viewerPageIndex.value = 0;
+    viewerShareCopied.value = false;
     panZoom.reset(); unlockBodyScroll();
   };
 
@@ -113,7 +133,7 @@ export const useImageViewer = ({ downloadBlob }) => {
 
   return {
     viewerOpen, viewerUrl, viewerName, viewerStage, viewerImg, viewerImgStyle,
-    viewerPages, viewerPageIndex,
+    viewerPages, viewerPageIndex, viewerShareCopied,
     viewerScale: panZoom.scale, viewerTx: panZoom.tx, viewerTy: panZoom.ty,
     onViewerImgLoad,
     onViewerPointerDown: panZoom.onPointerDown,
@@ -122,7 +142,7 @@ export const useImageViewer = ({ downloadBlob }) => {
     onViewerWheel: panZoom.onWheel,
     viewerPrev, viewerNext, closeViewer,
     viewerZoomIn: panZoom.zoomIn, viewerZoomOut: panZoom.zoomOut, viewerZoomReset: panZoom.zoomReset,
-    downloadCurrentImage, openViewer, onViewerKeydown,
+    downloadCurrentImage, copyImageShareLink, openViewer, onViewerKeydown,
     lockBodyScroll, unlockBodyScroll,
   };
 };

@@ -13,7 +13,7 @@ import { ref, computed } from "https://unpkg.com/vue@3/dist/vue.esm-browser.prod
 //   generateImageThumbBlob, generatePdfThumbBlob
 //   openPdfModal, openTagsModal
 //   pdfModalPages, pdfModalBrightness, pdfModalContrast, pdfModalSharpness
-//   openViewer, openPdfViewer, downloadBlob
+//   openViewer, openPdfViewer, closeViewer, closePdfViewer, downloadBlob
 //   pagesViewOpen, pagesViewList, pagesViewTitle, pagesViewDocId — shared refs
 //   isImage, isPdf
 export function useDocuments({
@@ -42,6 +42,8 @@ export function useDocuments({
   pdfModalSharpness,
   openViewer,
   openPdfViewer,
+  closeViewer,
+  closePdfViewer,
   downloadBlob,
   pagesViewOpen,
   pagesViewList,
@@ -57,6 +59,12 @@ export function useDocuments({
   const topTags = ref([]);
   const relatedTags = ref([]);
   const allTags = ref([]);
+
+  // Doc navigation within the currently active tag's document list.
+  // Captured at viewDocument time so the viewer can cycle prev/next.
+  const viewerDocList = ref([]);
+  const viewerDocIndex = ref(-1);
+  const canNavDocs = computed(() => viewerDocList.value.length > 1);
 
   const normalizedTagQuery = computed(() => normalizeTag(tagQuery.value));
   const cloudTags = computed(() => {
@@ -110,6 +118,12 @@ export function useDocuments({
   };
 
   const viewDocument = async (doc) => {
+    // Remember which document of the current tag list is open so the viewer
+    // header arrows can cycle prev/next. Only set when opened from the tag
+    // list (openViewerFromPages bypasses viewDocument and leaves this as-is).
+    const list = documents.value;
+    const idx = list.findIndex((d) => d.id === doc.id);
+    if (idx >= 0) { viewerDocList.value = list; viewerDocIndex.value = idx; }
     try {
       // If document has a PDF — open it inline so the WebView keeps the auth cookie
       if (doc.pdf_key) {
@@ -143,12 +157,26 @@ export function useDocuments({
     } catch (e) { console.error(e); }
   };
 
+  const viewDocumentByOffset = async (offset) => {
+    const list = viewerDocList.value;
+    if (list.length <= 1) return;
+    const n = list.length;
+    const next = (viewerDocIndex.value + offset + n) % n;
+    const doc = list[next];
+    // Close any open viewer so switching doc types (image↔pdf) doesn't stack overlays.
+    if (closeViewer) closeViewer();
+    if (closePdfViewer) closePdfViewer();
+    await viewDocument(doc);
+  };
+  const viewDocumentPrev = () => viewDocumentByOffset(-1);
+  const viewDocumentNext = () => viewDocumentByOffset(1);
+
   const editTags = async (doc) => {
     const initial = Array.isArray(doc.tags) ? doc.tags.join(" ") : "";
-    const result = await openTagsModal({ title: "Edit tags", initialValue: initial });
+    const result = await openTagsModal({ title: "Edit tags", initialValue: initial, initialComment: doc.comment || "" });
     if (result === null) return;
     try {
-      await editTagsApi(doc.id, result);
+      await editTagsApi(doc.id, result.tags, result.comment);
       await refreshAll();
     } catch (e) { console.error(e); }
   };
@@ -307,8 +335,10 @@ export function useDocuments({
   return {
     documents, loading, activeTag, tagQuery, topTags, relatedTags, allTags,
     cloudTags,
+    viewerDocList, viewerDocIndex, canNavDocs,
     fetchTopTags, fetchAllTags,
     refreshAll, setActiveTag, clearActiveTag,
-    viewDocument, editTags, regeneratePdf, deleteDocument, downloadPage,
+    viewDocument, viewDocumentPrev, viewDocumentNext,
+    editTags, regeneratePdf, deleteDocument, downloadPage,
   };
 }

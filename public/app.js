@@ -53,7 +53,7 @@ createApp({
     const usage = useUsage({ fetchUsageData });
     const pdfModal = usePdfModal({ decodeImageFile, autoProcessImageData, applySliderDeltas, autoPickQuality });
     const tagsModal = useTagsModal();
-    const imageViewer = useImageViewer({ downloadBlob });
+    const imageViewer = useImageViewer({ downloadBlob, createShareLink });
     const pdfViewer = usePdfViewer({
       apiFetch,
       createShareLink,
@@ -78,6 +78,8 @@ createApp({
       pdfModalSharpness: pdfModal.pdfModalSharpness,
       openViewer: imageViewer.openViewer,
       openPdfViewer: pdfViewer.openPdfViewer,
+      closeViewer: imageViewer.closeViewer,
+      closePdfViewer: pdfViewer.closePdfViewer,
       downloadBlob,
       pagesViewOpen, pagesViewList, pagesViewTitle, pagesViewDocId,
       isImage, isPdf,
@@ -112,7 +114,6 @@ createApp({
     const docMenu = useDocMenu({
       isImage, isPdf,
       editTags: documents.editTags,
-      triggerAddPages: upload.triggerAddPages,
       openPagesView: pagesView.openPagesView,
       regeneratePdf: documents.regeneratePdf,
       deleteDocument: documents.deleteDocument,

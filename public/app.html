@@ -7,7 +7,7 @@
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
   <title>R2 Storage Manager</title>
-  <link rel="stylesheet" href="/style.css?v=5" />
+  <link rel="stylesheet" href="/style.css?v=6" />
 </head>
 <body>
   <div id="app" class="app-layout" v-cloak>
@@ -105,8 +105,8 @@
                   :title="item.title">
                   <!-- Tags icon -->
                   <svg v-if="item.action === 'editTags'" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
-                  <!-- Add pages icon -->
-                  <svg v-else-if="item.action === 'addPages'" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+                  <!-- Comment icon -->
+                  <svg v-else-if="item.action === 'viewComment'" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
                   <!-- Edit pages icon -->
                   <svg v-else-if="item.action === 'editPages'" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
                   <!-- Re-process PDF icon -->
@@ -236,14 +236,28 @@
     </div>
 
     <!-- Tag modal -->
-    <div v-if="tagModalOpen" class="modal-overlay" @click.self="closeTagsModal(null)">
+    <div v-if="tagModalOpen" class="modal-overlay">
       <div class="modal">
         <div class="modal-title">{{ tagModalTitle }}</div>
         <input type="text" v-model="tagModalInput" placeholder="e.g. work invoices 2026"
-          class="modal-input" @keyup.enter="closeTagsModal(tagModalInput)" />
+          class="modal-input" @keyup.enter="closeTagsModal({ tags: tagModalInput, comment: tagModalComment })" />
+        <textarea v-model="tagModalComment" maxlength="1000" rows="4"
+          class="modal-input modal-textarea" placeholder="Comment (optional)"></textarea>
+        <div class="modal-char-counter">{{ (tagModalComment || '').length }}/1000</div>
         <div class="modal-buttons">
-          <button @click="closeTagsModal(tagModalInput)" class="btn-primary">OK</button>
+          <button @click="closeTagsModal({ tags: tagModalInput, comment: tagModalComment })" class="btn-primary">OK</button>
           <button @click="closeTagsModal(null)" class="btn-secondary">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Comment modal -->
+    <div v-if="commentModalOpen" class="modal-overlay" @click.self="closeCommentModal">
+      <div class="modal">
+        <div class="modal-title">Comment</div>
+        <div class="modal-text">{{ commentModalText }}</div>
+        <div class="modal-buttons">
+          <button @click="closeCommentModal" class="btn-primary">Close</button>
         </div>
       </div>
     </div>
@@ -286,6 +300,16 @@
           <button @click="viewerZoomReset" class="viewer-zoom-btn" title="Reset zoom">1:1</button>
         </div>
         <div class="viewer-actions">
+          <button v-if="canNavDocs" @click="viewDocumentPrev" class="viewer-action-btn" title="Previous document" aria-label="Previous document">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+          <button v-if="canNavDocs" @click="viewDocumentNext" class="viewer-action-btn" title="Next document" aria-label="Next document">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+          </button>
+          <button @click="copyImageShareLink" class="viewer-action-btn" :title="viewerShareCopied ? 'Copied' : 'Copy link'" aria-label="Copy link">
+            <svg v-if="!viewerShareCopied" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+            <svg v-else width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          </button>
           <button @click="downloadCurrentImage" class="viewer-action-btn" title="Download">⤓</button>
           <button @click="closeViewer" class="viewer-close-btn">Close</button>
         </div>
@@ -317,6 +341,12 @@
           <button @click="pdfViewerZoomReset" class="pdf-viewer-zoom-btn" title="Reset zoom">1:1</button>
         </div>
         <div class="pdf-viewer-actions">
+          <button v-if="canNavDocs" @click="viewDocumentPrev" class="pdf-viewer-action-btn" title="Previous document" aria-label="Previous document">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+          <button v-if="canNavDocs" @click="viewDocumentNext" class="pdf-viewer-action-btn" title="Next document" aria-label="Next document">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+          </button>
           <button @click="copyPdfShareLink" class="pdf-viewer-action-btn" :title="pdfViewerShareCopied ? 'Copied' : 'Copy link'" aria-label="Copy link">
             <svg v-if="!pdfViewerShareCopied" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
             <svg v-else width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>

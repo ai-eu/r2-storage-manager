@@ -6,7 +6,6 @@
 // Dependencies passed in:
 //   isImage, isPdf           — file-type predicates
 //   editTags                 — (doc) => void
-//   triggerAddPages          — (docId) => void
 //   openPagesView            — (doc) => void
 //   regeneratePdf            — (doc) => void
 //   deleteDocument           — (doc) => void
@@ -17,12 +16,13 @@ export const useDocMenu = ({
   isImage,
   isPdf,
   editTags,
-  triggerAddPages,
   openPagesView,
   regeneratePdf,
   deleteDocument,
 }) => {
   const menuKey = ref(null);
+  const commentModalOpen = ref(false);
+  const commentModalText = ref("");
 
   const getMenuItems = (doc) => {
     const items = [];
@@ -31,11 +31,12 @@ export const useDocMenu = ({
     items.push({ action: 'editTags', title: 'Tags' });
 
     if (!isImage(filename) && !isPdf(filename)) {
+      if (doc.comment) items.push({ action: 'viewComment', title: 'Comment' });
       items.push({ action: 'delete', title: 'Delete' });
       return items;
     }
 
-    items.push({ action: 'addPages', title: 'Add pages' });
+    if (doc.comment) items.push({ action: 'viewComment', title: 'Comment' });
     items.push({ action: 'editPages', title: 'Edit pages' });
 
     if (isImage(filename)) {
@@ -49,12 +50,14 @@ export const useDocMenu = ({
   const handleMenuAction = (action, doc) => {
     switch (action) {
       case 'editTags':       editTags(doc); break;
-      case 'addPages':       triggerAddPages(doc.id); break;
+      case 'viewComment':    commentModalText.value = doc.comment || ""; commentModalOpen.value = true; break;
       case 'editPages':      openPagesView(doc); break;
       case 'regeneratePdf':  regeneratePdf(doc); break;
       case 'delete':         deleteDocument(doc); break;
     }
   };
 
-  return { menuKey, getMenuItems, handleMenuAction };
+  const closeCommentModal = () => { commentModalOpen.value = false; commentModalText.value = ""; };
+
+  return { menuKey, getMenuItems, handleMenuAction, commentModalOpen, commentModalText, closeCommentModal };
 };

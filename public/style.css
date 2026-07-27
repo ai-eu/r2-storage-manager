@@ -99,19 +99,23 @@ body { overflow-x: hidden; }
 .modal-input:focus { outline:none; border-color:var(--accent); }
 .modal-buttons { display:flex; gap:12px; margin-top:20px; }
 .modal-buttons .btn-primary, .modal-buttons .btn-secondary { flex:1; }
+.modal-textarea { margin-top:12px; resize:vertical; min-height:80px; font-family:inherit; line-height:1.4; }
+.modal-char-counter { font-size:12px; color:var(--text-secondary); text-align:right; margin-top:4px; }
+.modal-text { white-space:pre-wrap; word-break:break-word; max-height:60vh; overflow-y:auto; font-size:14px; line-height:1.5; color:var(--text-primary); }
 
 /* Viewer */
 .viewer-overlay { position:fixed; inset:0; background:black; z-index:2000; display:flex; flex-direction:column; }
-.viewer-header { padding:12px 20px; display:flex; align-items:center; justify-content:space-between; background:rgba(0,0,0,0.8); gap:12px; width:100%; box-sizing:border-box; }
-.viewer-header-title { font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:0 1 auto; min-width:0; }
+.viewer-header { padding:12px 20px; display:flex; align-items:center; justify-content:space-between; background:var(--bg-secondary); border-bottom:1px solid var(--border); gap:12px; width:100%; box-sizing:border-box; }
+.viewer-header-title { font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:0 1 auto; min-width:0; color:var(--text-primary); }
 .viewer-toolbar { display:flex; align-items:center; gap:8px; flex:0 0 auto; }
 .viewer-actions { display:flex; align-items:center; gap:8px; flex:0 0 auto; margin-left:auto; }
-.viewer-action-btn { width:32px; height:32px; border-radius:8px; border:1px solid rgba(255,255,255,0.2); background:rgba(255,255,255,0.1); color:white; font-size:16px; cursor:pointer; display:flex; align-items:center; justify-content:center; transition:background 0.15s; }
-.viewer-action-btn:hover { background:rgba(255,255,255,0.2); }
-.viewer-zoom-btn { width:32px; height:32px; border-radius:8px; border:1px solid rgba(255,255,255,0.2); background:rgba(255,255,255,0.1); color:white; font-size:16px; cursor:pointer; display:flex; align-items:center; justify-content:center; transition:background 0.15s; }
-.viewer-zoom-btn:hover { background:rgba(255,255,255,0.2); }
-.viewer-zoom-val { font-size:13px; font-weight:600; color:rgba(255,255,255,0.8); min-width:44px; text-align:center; }
-.viewer-close-btn { padding:8px 16px; border-radius:8px; border:1px solid rgba(255,255,255,0.2); background:rgba(255,255,255,0.1); color:white; cursor:pointer; font-size:14px; }
+.viewer-action-btn { width:32px; height:32px; border-radius:8px; border:1px solid var(--border); background:var(--bg-tertiary); color:var(--text-primary); font-size:16px; cursor:pointer; display:flex; align-items:center; justify-content:center; transition:background 0.15s; }
+.viewer-action-btn:hover { background:var(--border); }
+.viewer-zoom-btn { width:32px; height:32px; border-radius:8px; border:1px solid var(--border); background:var(--bg-tertiary); color:var(--text-primary); font-size:16px; cursor:pointer; display:flex; align-items:center; justify-content:center; transition:background 0.15s; }
+.viewer-zoom-btn:hover { background:var(--border); }
+.viewer-zoom-val { font-size:13px; font-weight:600; color:var(--text-secondary); min-width:44px; text-align:center; }
+.viewer-close-btn { padding:8px 16px; border-radius:8px; border:1px solid var(--border); background:var(--bg-tertiary); color:var(--text-primary); cursor:pointer; font-size:14px; }
+.viewer-close-btn:hover { background:var(--border); }
 .viewer-body { flex:1; display:flex; align-items:center; justify-content:center; overflow:hidden; position:relative; }
 .viewer-body img { max-width:100%; max-height:100%; object-fit:contain; user-select:none; touch-action:none; }
 

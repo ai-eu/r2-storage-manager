@@ -250,6 +250,9 @@ const ensureSchema = async (db) => {
   if (!docColNames.has("correction_settings")) {
     await db.prepare("ALTER TABLE documents ADD COLUMN correction_settings TEXT").run();
   }
+  if (!docColNames.has("comment")) {
+    await db.prepare("ALTER TABLE documents ADD COLUMN comment TEXT").run();
+  }
 
   await db.prepare(
     "CREATE INDEX IF NOT EXISTS idx_objects_uploaded ON objects(uploaded_at)",
@@ -473,6 +476,7 @@ app.post("/api/documents/register", async (c) => {
 
   const { id, title, pages, thumb_key } = body;
   const tags = normalizeTags(body.tags);
+  const comment = body.comment != null ? String(body.comment).slice(0, 1000) : null;
   const uploadedAt = Number.isFinite(body.uploaded_at) ? body.uploaded_at : Date.now();
 
   if (!id || typeof title !== "string" || !title.trim()) {
@@ -490,13 +494,14 @@ app.post("/api/documents/register", async (c) => {
     await ensureSchema(db);
     const stmts = [
       db.prepare(
-        `INSERT INTO documents(id, title, page_count, uploaded_at, thumb_key, pdf_key)
-         VALUES(?,?,?,?,?,?)
+        `INSERT INTO documents(id, title, page_count, uploaded_at, thumb_key, pdf_key, comment)
+         VALUES(?,?,?,?,?,?,?)
          ON CONFLICT(id) DO UPDATE SET
            title=excluded.title, page_count=excluded.page_count,
            uploaded_at=excluded.uploaded_at, thumb_key=excluded.thumb_key,
-           pdf_key=COALESCE(documents.pdf_key, excluded.pdf_key)`,
-      ).bind(id, title.trim(), pages.length, uploadedAt, thumb_key || null, pdfPage?.key || null),
+           pdf_key=COALESCE(documents.pdf_key, excluded.pdf_key),
+           comment=excluded.comment`,
+      ).bind(id, title.trim(), pages.length, uploadedAt, thumb_key || null, pdfPage?.key || null, comment),
       db.prepare("DELETE FROM document_tags WHERE document_id=?").bind(id),
     ];
 
@@ -596,7 +601,7 @@ app.get("/api/documents", async (c) => {
     await backfillPdfKeys(db, c.env.MY_BUCKET);
 
     const parts = [
-      "SELECT d.id, d.title, d.page_count, d.uploaded_at, d.thumb_key, d.pdf_key,",
+      "SELECT d.id, d.title, d.page_count, d.uploaded_at, d.thumb_key, d.pdf_key, d.comment,",
       "  COALESCE(GROUP_CONCAT(dt.tag), '') AS tags",
       "FROM documents d",
       "LEFT JOIN document_tags dt ON dt.document_id = d.id",
@@ -625,6 +630,7 @@ app.get("/api/documents", async (c) => {
       uploaded_at: r.uploaded_at,
       thumb_key: r.thumb_key || null,
       pdf_key: r.pdf_key || null,
+      comment: r.comment || "",
       tags: parseCsvTags(r.tags || ""),
     }));
 
@@ -970,6 +976,7 @@ app.put("/api/documents/:id{[^/]+}/tags", async (c) => {
   if (!body) return c.json({ error: "Invalid JSON" }, 400);
 
   const tags = normalizeTags(body.tags);
+  const comment = body.comment != null ? String(body.comment).slice(0, 1000) : null;
   if (!docId) return c.json({ error: "id required" }, 400);
 
   try {
@@ -982,6 +989,7 @@ app.put("/api/documents/:id{[^/]+}/tags", async (c) => {
 
     const stmts = [
       db.prepare("DELETE FROM document_tags WHERE document_id=?").bind(docId),
+      db.prepare("UPDATE documents SET comment=? WHERE id=?").bind(comment, docId),
     ];
     for (const tag of tags) {
       stmts.push(
@@ -991,7 +999,7 @@ app.put("/api/documents/:id{[^/]+}/tags", async (c) => {
       );
     }
     await db.batch(stmts);
-    return c.json({ success: true, tags });
+    return c.json({ success: true, tags, comment });
   } catch (err) {
     return c.json({ error: err?.message || String(err) }, 500);
   }
