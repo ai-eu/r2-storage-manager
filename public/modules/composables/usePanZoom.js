@@ -133,6 +133,14 @@ export const usePanZoom = (options = {}) => {
         tx: tx.value,
         ty: ty.value,
       };
+      if (panMode === "scroll") {
+        const container = scrollContainer?.();
+        if (container) {
+          pinchStart.scrollLeft = container.scrollLeft;
+          pinchStart.scrollTop = container.scrollTop;
+          pinchStart.containerRect = container.getBoundingClientRect();
+        }
+      }
       dragLast = null;
       return;
     }
@@ -158,6 +166,17 @@ export const usePanZoom = (options = {}) => {
       const d = dist(p1, p2) || 1;
       if (panMode === "scroll") {
         applyScale(pinchStart.scale * (d / pinchStart.dist));
+        const container = scrollContainer?.();
+        if (container && pinchStart.containerRect) {
+          const k = scale.value / pinchStart.scale;
+          const cx = pinchStart.mid.x - pinchStart.containerRect.left;
+          const cy = pinchStart.mid.y - pinchStart.containerRect.top;
+          const targetLeft = pinchStart.scrollLeft * k + cx * (k - 1);
+          const targetTop = pinchStart.scrollTop * k + cy * (k - 1);
+          pendingScroll = { left: targetLeft, top: targetTop };
+          container.scrollLeft = targetLeft;
+          container.scrollTop = targetTop;
+        }
         return;
       }
       const m = mid(p1, p2);
@@ -187,6 +206,17 @@ export const usePanZoom = (options = {}) => {
     if (!pointers.has(e.pointerId)) return;
     pointers.delete(e.pointerId);
     if (pointers.size < 2) pinchStart = null;
+    if (pointers.size === 1) {
+      const [p] = Array.from(pointers.values());
+      if (panMode === "scroll") {
+        const container = scrollContainer?.();
+        dragLast = container
+          ? { x: p.x, y: p.y, scrollLeft: container.scrollLeft, scrollTop: container.scrollTop }
+          : { x: p.x, y: p.y, scrollLeft: 0, scrollTop: 0 };
+      } else {
+        dragLast = { x: p.x, y: p.y };
+      }
+    }
     if (pointers.size === 0) dragLast = null;
   };
 

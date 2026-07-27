@@ -21,14 +21,19 @@ export const usePdfViewer = ({ apiFetch, createShareLink, lockBodyScroll, unlock
   let pdfViewerDoc = null;
   let pdfViewerObjectUrl = null;
   let pdfViewerDownloadUrl = "";
+  let renderToken = 0;
+  let renderTimer = null;
 
   const renderPdfViewerPages = async () => {
     if (!pdfViewerDoc || !pdfViewerCanvases.value.length) return;
+    const token = ++renderToken;
     for (let i = 1; i <= pdfViewerDoc.numPages; i++) {
+      if (token !== renderToken) return;
       const canvas = pdfViewerCanvases.value[i - 1];
       if (!canvas) continue;
       try {
         const page = await pdfViewerDoc.getPage(i);
+        if (token !== renderToken) return;
         const viewport = page.getViewport({ scale: panZoom.scale.value });
         const ratio = window.devicePixelRatio || 1;
         canvas.width = Math.floor(viewport.width * ratio);
@@ -39,11 +44,12 @@ export const usePdfViewer = ({ apiFetch, createShareLink, lockBodyScroll, unlock
         ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
         await page.render({ canvasContext: ctx, viewport }).promise;
       } catch (e) {
-        console.error("pdf viewer render page failed", i, e);
+        if (e?.name !== 'RenderingCancelledException') {
+          console.error("pdf viewer render page failed", i, e);
+        }
       }
     }
-    // After canvases resize, re-apply scroll target from wheel zoom so the
-    // point under the cursor stays fixed once content bounds grow.
+    if (token !== renderToken) return;
     const ps = panZoom.consumePendingScroll?.();
     const container = pdfViewerScroll.value;
     if (ps && container) {
@@ -52,13 +58,18 @@ export const usePdfViewer = ({ apiFetch, createShareLink, lockBodyScroll, unlock
     }
   };
 
+  const debouncedRenderPdfViewerPages = () => {
+    clearTimeout(renderTimer);
+    renderTimer = setTimeout(() => renderPdfViewerPages(), 80);
+  };
+
   const panZoom = usePanZoom({
     minScale: 0.5,
     maxScale: 3,
     enabled: () => pdfViewerOpen.value,
     panMode: "scroll",
     roundScale: true,
-    onScaleChange: () => renderPdfViewerPages(),
+    onScaleChange: () => debouncedRenderPdfViewerPages(),
     scrollContainer: () => pdfViewerScroll.value,
     dragThreshold: 0,
   });
@@ -72,6 +83,8 @@ export const usePdfViewer = ({ apiFetch, createShareLink, lockBodyScroll, unlock
     pdfViewerCanvases.value = [];
     pdfViewerShareCopied.value = false;
     pdfViewerDownloadUrl = "";
+    clearTimeout(renderTimer);
+    renderToken++;
     unlockBodyScroll();
     if (pdfViewerDoc) {
       try { pdfViewerDoc.destroy(); } catch {}
