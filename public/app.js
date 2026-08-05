@@ -15,15 +15,15 @@ import {
   fetchDocuments as fetchDocumentsData,
   deleteDocument as deleteDocumentApi,
   editTags as editTagsApi,
-} from "./modules/api/documents.js";
+} from "./modules/api/documents.js?v=7";
 import { useUsage } from "./modules/composables/useUsage.js";
 import { useImageViewer } from "./modules/composables/useImageViewer.js";
 import { usePdfViewer } from "./modules/composables/usePdfViewer.js";
 import { usePdfModal } from "./modules/composables/usePdfModal.js";
 import { useTagsModal } from "./modules/composables/useTagsModal.js";
 import { usePagesView } from "./modules/composables/usePagesView.js";
-import { useUpload } from "./modules/composables/useUpload.js";
-import { useDocuments } from "./modules/composables/useDocuments.js";
+import { useUpload } from "./modules/composables/useUpload.js?v=7";
+import { useDocuments } from "./modules/composables/useDocuments.js?v=7";
 import { useDocMenu } from "./modules/composables/useDocMenu.js";
 import { useShare } from "./modules/composables/useShare.js";
 
@@ -101,7 +101,7 @@ createApp({
       uploading, uploadProgress, uploadError,
       refreshAll: documents.refreshAll,
       refreshPagesView: pagesView.refreshPagesView,
-      activeTag: documents.activeTag,
+      activeTags: documents.activeTags,
       setActiveTag: documents.setActiveTag,
       renderPageBlob, renderPdfBlob, addJpegBlobToPdf,
       generateImageThumbBlob, generatePdfThumbBlob,

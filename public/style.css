@@ -63,6 +63,9 @@ body { overflow-x: hidden; }
 .tags-list { display:flex; flex-wrap:wrap; gap:8px; }
 .tag-btn { padding:6px 14px; border-radius:20px; border:none; cursor:pointer; font-size:13px; font-weight:500; transition:all 0.2s; opacity:0.85; }
 .tag-btn:hover { opacity:1; transform:scale(1.02); }
+.tag-btn--selected { opacity:1; }
+.tag-btn-x { margin-left:6px; font-size:15px; line-height:1; opacity:0.8; }
+.tag-btn--selected:hover .tag-btn-x { opacity:1; }
 
 /* Files grid */
 .files-section { background:var(--bg-secondary); border:1px solid var(--border); border-radius:16px; padding:20px; min-height:400px; }

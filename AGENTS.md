@@ -11,9 +11,10 @@ Self-hosted file manager for Cloudflare R2. Backend is a single Cloudflare Worke
 
 ## Commands
 
-- `npm run dev` — local dev via `wrangler dev`
-- `npm run deploy` — `wrangler deploy`
+- `npm run dev` — local dev via `wrangler dev` (runs `predev`: writes `public/deploy-info.json`)
+- `npm run deploy` — `wrangler deploy` (runs `predeploy`: writes `public/deploy-info.json`)
 - `npm run setup` — interactive first-time provisioning (creates R2 bucket, D1 DB, sets secrets, deploys)
+- `npm run update` — `node scripts/update.js` (pull upstream + redeploy)
 - `npm run reset` — wipes bucket + DB (destructive; ask before running)
 - `npm run migrate` — `node scripts/migrate-documents.js`
 
@@ -31,14 +32,14 @@ public/                    # Frontend assets served by the Worker.
   app.html / app.js        # Main app shell + Vue composition root.
   style.css
   modules/
-    api/                   # client.js, documents.js, usage.js — fetch wrappers + resource modules.
+    api/                   # client.js, documents.js, usage.js, share.js — fetch wrappers + resources.
     composables/           # useXxx.js — Vue composables (state + handlers), dependency-injected.
     image/                 # process.js (decode/autocorrect), thumb.js (thumbnail generation).
     pdf/                   # build.js (PDF.js render/assemble helpers).
     utils/                 # files.js, format.js, tags.js — pure helpers.
-scripts/                   # setup.js, reset.js, migrate-documents.js, r2-cors.json.
+scripts/                   # setup.js, update.js, reset.js, migrate-documents.js, write-deploy-info.js, r2-cors.json.
 .github/workflows/         # one-click deploy action.
-docs/                      # notes (e.g. create_agents.md).
+docs/                      # notes (e.g. REFACTORING.md).
 ```
 
 ## Architecture Conventions
@@ -48,7 +49,7 @@ docs/                      # notes (e.g. create_agents.md).
 - Single file. Route handlers are short and delegate to local helpers (`getAwsClient`, `sanitizeFilename`, `normalizeTag`, `normalizeTags`, `parseCsvTags`, `sha256Hex`).
 - Auth: `authMiddleware` runs on `/api/*`. Accepts either the `auth` cookie or `Authorization: Bearer <key>`. Token compare uses `constantTimeEqual` — keep using it for any new secret comparison.
 - CORS handled by `applyCors` + the `/*` middleware; allowed origins come from `env.ALLOWED_ORIGINS` (comma-separated). Always call `applyCors(c)` in `onError` and after `next()`.
-- Public routes (`/api/login`, `/api/logout`) are registered **before** `app.use("/api/*", authMiddleware)`. Keep new public routes above that line.
+- Public routes (`/api/login`, `/api/logout`, `/api/share/:token`) are registered **before** `app.use("/api/*", authMiddleware)`. Keep new public routes above that line.
 - R2 keys: sanitize user-supplied filenames with `sanitizeFilename` before building keys. Never use raw user input as an R2 key.
 - Tags are normalized via `normalizeTag` (trim + lowercase) and deduped. Use `normalizeTags`/`parseCsvTags` for any tag input.
 - D1 access is via `c.env.DB.prepare(...).run()/all()/first()`. Schema is created lazily by `ensureSchema` with `CREATE TABLE IF NOT EXISTS` + `ALTER TABLE ADD COLUMN` migrations guarded by `PRAGMA table_info`.
@@ -66,7 +67,7 @@ docs/                      # notes (e.g. create_agents.md).
 ## Database
 
 - `schema.sql` is the **current, authoritative schema**. Do **not** modify it or run migrations that change it without explicit user approval.
-- Tables: `objects`, `object_tags`, `documents`, `document_tags`, `usage_cache`. See `schema.sql` for columns and indexes.
+- Tables: `objects`, `object_tags`, `documents`, `document_tags`, `usage_cache`, `share_links`. See `schema.sql` for columns and indexes.
 - `objects` rows can be standalone files or pages belonging to a `document_id` (with `page_number` and `original_key`).
 - When adding columns, follow the existing `ensureSchema` pattern: `PRAGMA table_info` check + `ALTER TABLE ADD COLUMN`, and **do not** edit `schema.sql`.
 

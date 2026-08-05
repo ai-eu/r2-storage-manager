@@ -71,7 +71,7 @@ app.post("/api/login", async (c) => {
   }
   c.header(
     "Set-Cookie",
-    `auth=${encodeURIComponent(key)}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=2592000`,
+    `auth=${encodeURIComponent(key)}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=315360000`,
   );
   return c.json({ success: true });
 });
@@ -591,8 +591,13 @@ const backfillPdfKeys = async (db, bucket) => {
 };
 
 // ── GET /api/documents ──
+// Supports multi-tag AND filtering via repeated ?tag=t1&tag=t2 or comma-separated ?tags=t1,t2.
 app.get("/api/documents", async (c) => {
-  const tag = normalizeTag(c.req.query("tag") || "");
+  const tags = parseCsvTags(c.req.query("tags") || "");
+  if (!tags.length) {
+    const single = normalizeTag(c.req.query("tag") || "");
+    if (single) tags.push(single);
+  }
   const db = c.env.DB;
   if (!db) return c.json({ error: "DB not configured" }, 500);
 
@@ -609,7 +614,7 @@ app.get("/api/documents", async (c) => {
     ];
     const bindings = [];
 
-    if (tag) {
+    for (const tag of tags) {
       parts.push(
         "AND EXISTS (SELECT 1 FROM document_tags dt2 WHERE dt2.document_id = d.id AND dt2.tag = ?)",
       );
@@ -1048,26 +1053,39 @@ app.get("/api/tags/all", async (c) => {
 });
 
 // ── GET /api/tags/related ──
+// Returns tags co-occurring on documents that have ALL the given base tags.
+// Accepts repeated ?tag=t1&tag=t2 or comma-separated ?tags=t1,t2.
 app.get("/api/tags/related", async (c) => {
   const db = c.env.DB;
   if (!db) return c.json({ error: "DB not configured" }, 500);
 
-  const baseTag = normalizeTag(c.req.query("tag") || "");
-  if (!baseTag) return c.json({ tags: [] });
+  const baseTags = parseCsvTags(c.req.query("tags") || "");
+  if (!baseTags.length) {
+    const single = normalizeTag(c.req.query("tag") || "");
+    if (single) baseTags.push(single);
+  }
+  if (!baseTags.length) return c.json({ tags: [] });
 
   const limit = Math.max(1, Math.min(50, Number(c.req.query("limit") || "10") || 10));
 
   try {
     await ensureSchema(db);
+    // Documents matching every base tag, then other tags on those documents.
+    const basePlaceholders = baseTags.map(() => "?").join(",");
+    const excludePlaceholders = baseTags.map(() => "?").join(",");
     const rows = await db
       .prepare(
         `SELECT t.tag, COUNT(*) AS count
          FROM document_tags t
-         JOIN document_tags b ON b.document_id = t.document_id
-         WHERE b.tag = ? AND t.tag <> ?
+         WHERE t.document_id IN (
+           SELECT document_id FROM document_tags
+           GROUP BY document_id
+           HAVING SUM(CASE WHEN tag IN (${basePlaceholders}) THEN 1 ELSE 0 END) = ?
+         )
+         AND t.tag NOT IN (${excludePlaceholders})
          GROUP BY t.tag ORDER BY count DESC, t.tag ASC LIMIT ?`,
       )
-      .bind(baseTag, baseTag, limit)
+      .bind(...baseTags, baseTags.length, ...baseTags, limit)
       .all();
     return c.json({ tags: (rows.results || []).map((r) => ({ tag: r.tag, count: r.count })) });
   } catch (err) {

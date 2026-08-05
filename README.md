@@ -19,7 +19,8 @@ Personal secure cloud storage for documents, photos, and sensitive files. Self-h
 - Multi-page documents: scan/image sets assembled into a single PDF
 - Image processing modal with brightness / contrast / sharpness sliders and auto-enhancement
 - Page reordering and add-pages flow for existing documents
-- Tag-based organization with tag cloud (top, all, related tags) and search
+- Tag-based organization with multi-tag AND filtering (top, all, related tags) and search
+- Public share links for individual objects (short-lived tokens)
 - Image and PDF thumbnails (generated client-side, stored in R2)
 - Image viewer with pinch-to-zoom and wheel zoom
 - PDF viewer with pan/zoom
@@ -104,6 +105,14 @@ npm run deploy
 
 Your app will be available at `https://r2-storage-manager.<your-subdomain>.workers.dev`
 
+### Update from upstream
+
+```bash
+npm run update
+```
+
+Pulls upstream changes and redeploys. Idempotent — existing buckets, databases, and secrets are reused, schema re-applies safely (`CREATE ... IF NOT EXISTS`).
+
 ### Login
 
 Open the URL and enter the API key that was shown during setup.
@@ -127,13 +136,13 @@ r2-storage-manager/
 │   ├── app.js                  # Vue 3 composition root (wires composables)
 │   ├── style.css               # Styles
 │   └── modules/
-│       ├── api/                # client.js, documents.js, usage.js — fetch wrappers + resources
+│       ├── api/                # client.js, documents.js, usage.js, share.js — fetch wrappers + resources
 │       ├── composables/        # useXxx.js — Vue composables (DI-injected)
 │       ├── image/              # process.js (decode/autocorrect), thumb.js (thumbnails)
 │       ├── pdf/                # build.js (PDF.js render/assemble helpers)
 │       └── utils/              # files.js, format.js, tags.js — pure helpers
 ├── src/
-│   └── worker.js               # Cloudflare Worker (Hono API, ~1100 lines, single file)
+│   └── worker.js               # Cloudflare Worker (Hono API, ~1220 lines, single file)
 ├── scripts/
 │   ├── setup.js                # Interactive setup wizard
 │   ├── update.js               # Pull upstream + redeploy (npm run update)

@@ -10,8 +10,8 @@ import { ref } from "https://unpkg.com/vue@3/dist/vue.esm-browser.prod.js";
 //   uploadError           — shared ref<string>
 //   refreshAll            — top-level refresh callback
 //   refreshPagesView      — pages view refresh callback
-//   activeTag             — shared ref<string> of the currently active tag
-//   setActiveTag          — activates a tag (fetches its documents + related tags)
+//   activeTags            — shared ref<string[]> of currently active filter tags
+//   setActiveTag          — adds a tag to the active filter (fetches docs + related)
 //   renderPageBlob        — renders a processed page blob from a decoded list item
 //   renderPdfBlob         — builds a PDF blob from a list + settings
 //   addJpegBlobToPdf      — appends a JPEG blob to a jsPDF instance
@@ -28,7 +28,7 @@ export function useUpload({
   uploadError,
   refreshAll,
   refreshPagesView,
-  activeTag,
+  activeTags,
   setActiveTag,
   renderPageBlob,
   renderPdfBlob,
@@ -52,7 +52,7 @@ export function useUpload({
   // freshly uploaded file alongside other documents sharing that tag. Otherwise
   // just refresh the current view.
   const revealUploaded = async (tags) => {
-    if (!activeTag.value && tags && tags.length) {
+    if (!activeTags.value.length && tags && tags.length) {
       await setActiveTag(tags[0]);
     } else {
       await refreshAll();

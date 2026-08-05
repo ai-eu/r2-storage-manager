@@ -54,7 +54,7 @@ export function useDocuments({
 }) {
   const documents = ref([]);
   const loading = ref(false);
-  const activeTag = ref("");
+  const activeTags = ref([]);
   const tagQuery = ref("");
   const topTags = ref([]);
   const relatedTags = ref([]);
@@ -68,7 +68,7 @@ export function useDocuments({
 
   const normalizedTagQuery = computed(() => normalizeTag(tagQuery.value));
   const cloudTags = computed(() => {
-    if (activeTag.value) return relatedTags.value;
+    if (activeTags.value.length) return relatedTags.value;
     const q = normalizedTagQuery.value;
     if (!q) return topTags.value;
     return (allTags.value.length ? allTags.value : topTags.value)
@@ -83,38 +83,47 @@ export function useDocuments({
     try { allTags.value = await fetchAllTagsData(); }
     catch { allTags.value = []; }
   };
-  const fetchRelatedTags = async (tag) => {
-    const n = normalizeTag(tag);
-    if (!n) { relatedTags.value = []; return; }
-    try { relatedTags.value = await fetchRelatedTagsData(tag); }
+  const fetchRelatedTags = async () => {
+    if (!activeTags.value.length) { relatedTags.value = []; return; }
+    try { relatedTags.value = await fetchRelatedTagsData(activeTags.value); }
     catch { relatedTags.value = []; }
   };
 
   const fetchDocuments = async () => {
     loading.value = true;
     try {
-      documents.value = await fetchDocumentsData(activeTag.value);
+      documents.value = await fetchDocumentsData(activeTags.value);
     } catch (e) { console.error(e); }
     finally { loading.value = false; }
   };
 
   const refreshAll = async () => {
-    if (activeTag.value) {
-      await Promise.all([fetchDocuments(), fetchRelatedTags(activeTag.value), fetchAllTags()]);
+    if (activeTags.value.length) {
+      await Promise.all([fetchDocuments(), fetchRelatedTags(), fetchAllTags()]);
       return;
     }
     documents.value = [];
     await Promise.all([fetchTopTags(), fetchAllTags()]);
   };
 
+  // Add a tag to the active filter (AND). No-op if already present.
   const setActiveTag = async (tag) => {
-    activeTag.value = normalizeTag(tag); tagQuery.value = "";
-    await Promise.all([fetchDocuments(), fetchRelatedTags(activeTag.value)]);
+    const n = normalizeTag(tag);
+    if (!n || activeTags.value.includes(n)) return;
+    activeTags.value = [...activeTags.value, n]; tagQuery.value = "";
+    await Promise.all([fetchDocuments(), fetchRelatedTags()]);
   };
-  const clearActiveTag = async () => {
-    activeTag.value = ""; tagQuery.value = ""; relatedTags.value = [];
-    documents.value = [];
-    await Promise.all([fetchTopTags(), fetchAllTags()]);
+  // Remove one tag from the active filter; clears all if it was the last.
+  const removeActiveTag = async (tag) => {
+    const n = normalizeTag(tag);
+    if (!n) return;
+    activeTags.value = activeTags.value.filter((t) => t !== n);
+    if (!activeTags.value.length) {
+      tagQuery.value = ""; relatedTags.value = []; documents.value = [];
+      await Promise.all([fetchTopTags(), fetchAllTags()]);
+    } else {
+      await Promise.all([fetchDocuments(), fetchRelatedTags()]);
+    }
   };
 
   const viewDocument = async (doc) => {
@@ -333,11 +342,11 @@ export function useDocuments({
   };
 
   return {
-    documents, loading, activeTag, tagQuery, topTags, relatedTags, allTags,
+    documents, loading, activeTags, tagQuery, topTags, relatedTags, allTags,
     cloudTags,
     viewerDocList, viewerDocIndex, canNavDocs,
     fetchTopTags, fetchAllTags,
-    refreshAll, setActiveTag, clearActiveTag,
+    refreshAll, setActiveTag, removeActiveTag,
     viewDocument, viewDocumentPrev, viewDocumentNext,
     editTags, regeneratePdf, deleteDocument, downloadPage,
   };

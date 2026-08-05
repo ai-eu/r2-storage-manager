@@ -7,7 +7,7 @@
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
   <title>R2 Storage Manager</title>
-  <link rel="stylesheet" href="/style.css?v=6" />
+  <link rel="stylesheet" href="/style.css?v=7" />
 </head>
 <body>
   <div id="app" class="app-layout" v-cloak>
@@ -16,22 +16,21 @@
 
       <div class="tag-cloud">
         <div class="tag-cloud-title">Tags</div>
-        <input v-if="!activeTag" v-model="tagQuery" type="text"
+        <input v-if="activeTags.length===0" v-model="tagQuery" type="text"
           placeholder="Search..." maxlength="8" class="tag-cloud-search" />
-        <button v-if="activeTag" @click="clearActiveTag" class="tag-btn"
-          style="background:var(--bg-tertiary);color:var(--text-primary);">All</button>
         <div class="tags-list">
-          <button v-if="!activeTag && cloudTags.length===0 && !tagQuery" class="tag-btn"
+          <button v-if="activeTags.length===0 && cloudTags.length===0 && !tagQuery" class="tag-btn"
             style="background:var(--bg-tertiary);color:var(--text-secondary);" disabled>No tags yet</button>
+          <button v-for="t in activeTags" :key="'sel-'+t" @click="removeActiveTag(t)"
+            class="tag-btn tag-btn--selected"
+            :style="{backgroundColor:tagToColors(t).bg,color:tagToColors(t).fg}">
+            {{ t }} <span class="tag-btn-x">&times;</span>
+          </button>
           <button v-for="t in cloudTags" :key="t.tag" @click="setActiveTag(t.tag)"
             class="tag-btn" :style="{backgroundColor:tagToColors(t.tag).bg,color:tagToColors(t.tag).fg}">
             {{ t.tag }}
           </button>
         </div>
-      </div>
-
-      <div v-if="activeTag" style="color:var(--text-secondary);font-size:13px;margin-bottom:16px;">
-        Filter: {{ activeTag }}
       </div>
 
       <div class="sidebar-bottom">
@@ -85,7 +84,7 @@
         <button @click="refreshAll" class="btn-icon" title="Refresh">↻</button>
       </div>
 
-      <div v-if="activeTag" class="files-section">
+      <div v-if="activeTags.length" class="files-section">
         <div v-if="loading" class="loading-state"><span>Loading...</span></div>
         <div v-else-if="documents.length===0" class="empty-state"><span>No documents</span></div>
         <div v-else class="files-grid">
@@ -376,6 +375,6 @@
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-  <script type="module" src="/app.js?v=6"></script>
+  <script type="module" src="/app.js?v=7"></script>
 </body>
 </html>
